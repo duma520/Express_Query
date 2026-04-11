@@ -27,11 +27,17 @@
 ## 《快递查询系统（Express_Query）完全使用指南》
 
 **作者：** 杜玛
+
 **版权：** © 永久 杜玛
+
 **日期：** 永久
+
 **开源许可证：** GNU Affero General Public License v3.0
+
 **项目地址：** [https://github.com/duma520/Express_Query](https://github.com/duma520/Express_Query)
+
 **问题报告：** 请通过GitHub Issues提交
+
 **开发起始时间：** 2026-03-26
 
 ---
