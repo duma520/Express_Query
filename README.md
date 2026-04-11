@@ -32,10 +32,15 @@
 
 
 **项目名称：** 快递查询系统 Pro (ExpressQueryPro)
+
 **当前版本：** 1.1.31
+
 **构建日期：** 2026-04-12
+
 **作者：** 杜玛
+
 **版权：** © 永久 杜玛
+
 **开源许可证：** GNU Affero General Public License v3.0
 
 **项目主页：** [https://github.com/duma520/Express_Query](https://github.com/duma520/Express_Query)
