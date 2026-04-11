@@ -44,7 +44,9 @@
 **开源许可证：** GNU Affero General Public License v3.0
 
 **项目主页：** [https://github.com/duma520/Express_Query](https://github.com/duma520/Express_Query)
+
 **问题反馈：** 请通过 [GitHub Issues](https://github.com/duma520/Express_Query/issues) 提交
+
 **技术支持：** 我们**不提供**私人邮箱支持，所有技术问题请通过公开的GitHub Issues渠道进行，这样不仅您的问题能得到解决，其他遇到同样问题的用户也能从中受益。感谢您的理解与合作。
 
 **⚠️ 版权声明：** 本文档内容及本软件 © 永久 杜玛 保留所有权利。本文档内容未经书面许可，不得转载或用于任何商业用途。
