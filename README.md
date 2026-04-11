@@ -29,7 +29,7 @@
 
 **—— 从零基础到高级应用，您所需要的一切都在这里**
 
-![Project Logo](https://via.placeholder.com/150/4A90D9/FFFFFF?text=ExpressQuery)
+
 
 **项目名称：** 快递查询系统 Pro (ExpressQueryPro)
 **当前版本：** 1.1.31
