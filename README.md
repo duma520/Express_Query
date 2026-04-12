@@ -1,5 +1,22 @@
 # 软件截图 v1.1.54
 
+<img width="502" height="432" alt="image" src="https://github.com/user-attachments/assets/eb53d6db-484b-4927-8ef1-c8b69ea82129" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/48344f6e-5cc9-46af-a6b7-b257fb7b9a3a" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/dc0f49b1-24ee-4ddb-bdf2-4480ed1e2d91" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/ab55296c-e4a0-4248-a227-54914bdeea40" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/00259d11-1d41-4119-8a25-2509a0c87bef" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/3a386afa-ef0c-47d0-8070-878260721ac9" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/0e33f96e-d94c-4012-adb7-8696668918ba" />
+
+<img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/026a89ff-7cee-48de-8b3e-ab38cd966b4e" />
+
+<img width="1175" height="766" alt="image" src="https://github.com/user-attachments/assets/4e5fb955-da4e-4945-8659-882ba7019549" />
 
 
 ***
