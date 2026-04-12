@@ -14,7 +14,6 @@ import time
 from threading import Lock
 import base64
 from io import BytesIO
-
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFormLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
@@ -35,14 +34,6 @@ from PySide6.QtGui import (
 )
 
 
-# 全局常量
-APP_NAME = "ExpressQueryPro"
-APP_VERSION = "1.1.31"
-DB_VERSION = "1.0"
-BACKUP_DIR = "backups"
-MAX_BACKUP_COUNT = 30
-DEBUG_MODE = False
-
 # 默认窗口大小
 DEFAULT_WINDOW_WIDTH = 1400
 DEFAULT_WINDOW_HEIGHT = 900
@@ -60,7 +51,7 @@ APP_DIR = get_app_dir()
 # ==================== 项目信息元数据 ====================
 class ProjectInfo:
     """项目信息元数据（集中管理所有项目相关信息）"""
-    VERSION = "1.1.31"  # 更新版本号
+    VERSION = "1.1.45"  # 更新版本号
     BUILD_DATE = "2026-04-12"
     AUTHOR = "杜玛"
     LICENSE = "GNU Affero General Public License v3.0"
@@ -68,6 +59,7 @@ class ProjectInfo:
     URL = "https://github.com/duma520/Express_Query"
     MAINTAINER_EMAIL = "不提供"
     NAME = "快递查询系统"
+    NAME_ENG = "Express_Query"
     DESCRIPTION = "Express_Query 快递查询系统"
     
     @classmethod
@@ -152,6 +144,17 @@ class ProjectInfo:
             'url': cls.URL
         }
 
+
+
+
+
+# 全局常量
+APP_NAME = ProjectInfo.NAME_ENG
+APP_VERSION = ProjectInfo.VERSION
+DB_VERSION = "1.0"
+BACKUP_DIR = "backups"
+MAX_BACKUP_COUNT = 30
+DEBUG_MODE = False
 
 # ==================== 马卡龙色系定义 ====================
 class MacaronColors:
@@ -241,7 +244,7 @@ class MacaronColors:
 
 # ==================== 全局样式表 ====================
 class MacaronStyle:
-    """马卡龙风格样式表"""
+    """马卡龙风格样式表（精简版 - 无圆角，保持原始大小）"""
     
     @classmethod
     def get_main_style(cls) -> str:
@@ -260,7 +263,6 @@ class MacaronStyle:
             QGroupBox {{
                 font-weight: bold;
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 8px;
                 margin-top: 12px;
                 padding-top: 10px;
                 background-color: {MacaronColors.BG_CARD.name()};
@@ -274,14 +276,12 @@ class MacaronStyle:
                 background-color: transparent;
             }}
             
+            /* 按钮 - 去掉圆角和多余padding */
             QPushButton {{
                 background-color: {MacaronColors.BLUE_LAVENDER.name()};
-                border: none;
-                border-radius: 6px;
-                padding: 6px 14px;
+                border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
+                padding: 2px 8px;
                 color: {MacaronColors.TEXT_DARK.name()};
-                font-weight: 500;
-                min-height: 20px;
             }}
             
             QPushButton:hover {{
@@ -297,10 +297,10 @@ class MacaronStyle:
                 color: {MacaronColors.TEXT_LIGHT.name()};
             }}
             
+            /* 输入框 - 保持原始高度 */
             QLineEdit {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-                padding: 6px 10px;
+                padding: 2px 4px;
                 background-color: white;
                 selection-background-color: {MacaronColors.BLUE_LAVENDER.name()};
             }}
@@ -309,12 +309,11 @@ class MacaronStyle:
                 border: 1px solid {MacaronColors.BLUE_SKY.name()};
             }}
             
+            /* 下拉框 - 保持原始高度 */
             QComboBox {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-                padding: 5px 10px;
+                padding: 2px 4px;
                 background-color: white;
-                min-height: 20px;
             }}
             
             QComboBox:hover {{
@@ -323,7 +322,7 @@ class MacaronStyle:
             
             QComboBox::drop-down {{
                 border: none;
-                width: 20px;
+                width: 16px;
             }}
             
             QComboBox::down-arrow {{
@@ -331,12 +330,12 @@ class MacaronStyle:
                 border-left: 4px solid transparent;
                 border-right: 4px solid transparent;
                 border-top: 5px solid {MacaronColors.TEXT_MEDIUM.name()};
-                margin-right: 5px;
+                margin-right: 4px;
             }}
             
+            /* 表格 - 去掉圆角 */
             QTableWidget {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 8px;
                 background-color: white;
                 gridline-color: {MacaronColors.BORDER_LIGHT.name()};
                 alternate-background-color: {MacaronColors.NEUTRAL_CREAM.name()};
@@ -345,7 +344,7 @@ class MacaronStyle:
             }}
             
             QTableWidget::item {{
-                padding: 5px;
+                padding: 2px 4px;
                 border-bottom: 1px solid {MacaronColors.BORDER_LIGHT.name()};
             }}
             
@@ -355,7 +354,7 @@ class MacaronStyle:
             
             QHeaderView::section {{
                 background-color: {MacaronColors.PINK_COTTON.name()};
-                padding: 8px;
+                padding: 4px;
                 border: none;
                 border-right: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 border-bottom: 1px solid {MacaronColors.BORDER_LIGHT.name()};
@@ -365,19 +364,16 @@ class MacaronStyle:
             
             QTabWidget::pane {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 8px;
                 background-color: {MacaronColors.BG_CARD.name()};
-                padding: 10px;
+                padding: 4px;
             }}
             
             QTabBar::tab {{
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                padding: 8px 16px;
-                margin-right: 3px;
+                padding: 4px 12px;
+                margin-right: 2px;
                 color: {MacaronColors.TEXT_MEDIUM.name()};
             }}
             
@@ -400,12 +396,10 @@ class MacaronStyle:
                 border: none;
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
                 width: 10px;
-                border-radius: 5px;
             }}
             
             QScrollBar::handle:vertical {{
                 background-color: {MacaronColors.PINK_ROSE.name()};
-                border-radius: 5px;
                 min-height: 20px;
             }}
             
@@ -422,12 +416,10 @@ class MacaronStyle:
                 border: none;
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
                 height: 10px;
-                border-radius: 5px;
             }}
             
             QScrollBar::handle:horizontal {{
                 background-color: {MacaronColors.PINK_ROSE.name()};
-                border-radius: 5px;
                 min-width: 20px;
             }}
             
@@ -436,8 +428,7 @@ class MacaronStyle:
             }}
             
             QProgressBar {{
-                border: none;
-                border-radius: 5px;
+                border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
                 text-align: center;
                 color: {MacaronColors.TEXT_DARK.name()};
@@ -445,7 +436,6 @@ class MacaronStyle:
             
             QProgressBar::chunk {{
                 background-color: {MacaronColors.GREEN_MINT.name()};
-                border-radius: 5px;
             }}
             
             QStatusBar {{
@@ -460,21 +450,19 @@ class MacaronStyle:
             
             QTextEdit {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
                 background-color: white;
                 selection-background-color: {MacaronColors.BLUE_LAVENDER.name()};
-                padding: 5px;
+                padding: 2px;
             }}
             
             QTreeWidget {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
                 background-color: white;
                 alternate-background-color: {MacaronColors.NEUTRAL_CREAM.name()};
             }}
             
             QTreeWidget::item {{
-                padding: 4px;
+                padding: 2px;
             }}
             
             QTreeWidget::item:selected {{
@@ -484,14 +472,13 @@ class MacaronStyle:
             
             QListWidget {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
                 background-color: white;
                 alternate-background-color: {MacaronColors.NEUTRAL_CREAM.name()};
-                padding: 5px;
+                padding: 2px;
             }}
             
             QListWidget::item {{
-                padding: 8px;
+                padding: 4px;
                 border-bottom: 1px solid {MacaronColors.BORDER_LIGHT.name()};
             }}
             
@@ -505,13 +492,12 @@ class MacaronStyle:
             }}
             
             QCheckBox {{
-                spacing: 8px;
+                spacing: 4px;
             }}
             
             QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
+                width: 14px;
+                height: 14px;
                 border: 1px solid {MacaronColors.BORDER_MEDIUM.name()};
                 background-color: white;
             }}
@@ -527,8 +513,7 @@ class MacaronStyle:
             
             QSpinBox {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-                padding: 5px;
+                padding: 2px;
                 background-color: white;
             }}
             
@@ -539,8 +524,7 @@ class MacaronStyle:
             QSpinBox::up-button, QSpinBox::down-button {{
                 border: none;
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
-                border-radius: 3px;
-                width: 16px;
+                width: 14px;
             }}
             
             QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
@@ -549,14 +533,13 @@ class MacaronStyle:
             
             QDateEdit {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-                padding: 5px;
+                padding: 2px;
                 background-color: white;
             }}
             
             QDateEdit::drop-down {{
                 border: none;
-                width: 20px;
+                width: 16px;
             }}
             
             QDateEdit::down-arrow {{
@@ -569,14 +552,12 @@ class MacaronStyle:
             QCalendarWidget {{
                 background-color: white;
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 8px;
             }}
             
             QCalendarWidget QToolButton {{
                 background-color: transparent;
                 border: none;
-                border-radius: 4px;
-                padding: 4px;
+                padding: 2px;
             }}
             
             QCalendarWidget QToolButton:hover {{
@@ -586,44 +567,24 @@ class MacaronStyle:
             QCalendarWidget QMenu {{
                 background-color: white;
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-            }}
-            
-            QCalendarWidget QSpinBox {{
-                border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 4px;
             }}
             
             QCalendarWidget QTableView {{
                 alternate-background-color: {MacaronColors.NEUTRAL_CREAM.name()};
             }}
             
-            QCalendarWidget QAbstractItemView:enabled {{
-                color: {MacaronColors.TEXT_DARK.name()};
-            }}
-            
-            QCalendarWidget QAbstractItemView:disabled {{
-                color: {MacaronColors.TEXT_LIGHT.name()};
-            }}
-            
             QMessageBox {{
                 background-color: {MacaronColors.BG_CARD.name()};
-            }}
-            
-            QMessageBox QPushButton {{
-                min-width: 80px;
             }}
             
             QMenu {{
                 background-color: white;
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                border-radius: 6px;
-                padding: 5px;
+                padding: 2px;
             }}
             
             QMenu::item {{
-                padding: 6px 25px 6px 20px;
-                border-radius: 4px;
+                padding: 4px 20px 4px 16px;
             }}
             
             QMenu::item:selected {{
@@ -633,7 +594,7 @@ class MacaronStyle:
             QMenu::separator {{
                 height: 1px;
                 background-color: {MacaronColors.BORDER_LIGHT.name()};
-                margin: 4px 0;
+                margin: 2px 0;
             }}
         """
     
@@ -643,8 +604,7 @@ class MacaronStyle:
         return f"""
             QWidget {{
                 background-color: {color.name()};
-                border-radius: 8px;
-                padding: 5px;
+                padding: 2px;
             }}
         """
 
@@ -1060,7 +1020,7 @@ class ApiAccountManager:
         self.check_and_reset_daily_usage()  # 初始化时检查是否需要重置
         
     def check_and_reset_daily_usage(self):
-        """检查并重置每日使用次数"""
+        """检查并重置每日使用次数（不重置 current_account）"""
         today = datetime.now().strftime('%Y-%m-%d')
         
         # 查询所有账号，检查last_used_date是否为今天
@@ -1070,7 +1030,6 @@ class ApiAccountManager:
         for account in accounts:
             last_used_date = account.get('last_used_date', '')
             if last_used_date != today:
-                # 不是今天的记录，重置使用次数
                 reset_sql = """
                 UPDATE api_accounts 
                 SET used_today = 0, last_used_date = NULL 
@@ -1078,14 +1037,53 @@ class ApiAccountManager:
                 """
                 self.db_manager.execute_update(reset_sql, (account['id'],))
         
-        # 重新加载账号数据
-        self.load_accounts()
+        # ========== 重要修改：不要在这里调用 load_accounts()，避免重置 current_account ==========
+        # 只更新 accounts 列表中的数据，不改变 current_account
+        self._refresh_accounts_list()
+
+    def _refresh_accounts_list(self):
+        """刷新账号列表数据，但不改变 current_account"""
+        query = """
+        SELECT * FROM api_accounts 
+        WHERE is_active = 1 
+        ORDER BY sort_order, id
+        """
+        new_accounts = self.db_manager.execute_query(query)
         
+        # 确保所有账号的last_used_date字段存在
+        for account in new_accounts:
+            try:
+                check_sql = "SELECT last_used_date FROM api_accounts LIMIT 1"
+                self.db_manager.execute_query(check_sql)
+            except:
+                try:
+                    alter_sql = "ALTER TABLE api_accounts ADD COLUMN last_used_date TEXT"
+                    self.db_manager.execute_update(alter_sql)
+                except:
+                    pass
+        
+        # 保存当前账号ID
+        current_id = self.current_account['id'] if self.current_account else None
+        
+        # 更新列表
+        self.accounts = new_accounts
+        
+        # 恢复当前账号（如果还存在）
+        if current_id:
+            for acc in self.accounts:
+                if acc['id'] == current_id:
+                    self.current_account = acc
+                    break
+            else:
+                # 如果当前账号已被删除，则使用第一个
+                if self.accounts:
+                    self.current_account = self.accounts[0]
+        else:
+            if self.accounts:
+                self.current_account = self.accounts[0]
+
     def load_accounts(self):
-        """加载所有账号"""
-        # 先检查是否需要重置
-        today = datetime.now().strftime('%Y-%m-%d')
-        
+        """加载所有账号（会重置 current_account 为第一个）"""
         query = """
         SELECT * FROM api_accounts 
         WHERE is_active = 1 
@@ -1095,12 +1093,10 @@ class ApiAccountManager:
         
         # 确保所有账号的last_used_date字段存在
         for account in self.accounts:
-            # 如果数据库中没有last_used_date字段，尝试添加
             try:
                 check_sql = "SELECT last_used_date FROM api_accounts LIMIT 1"
                 self.db_manager.execute_query(check_sql)
             except:
-                # 字段不存在，添加它
                 try:
                     alter_sql = "ALTER TABLE api_accounts ADD COLUMN last_used_date TEXT"
                     self.db_manager.execute_update(alter_sql)
@@ -1109,8 +1105,8 @@ class ApiAccountManager:
             
             # 检查是否需要重置
             last_used_date = account.get('last_used_date', '')
+            today = datetime.now().strftime('%Y-%m-%d')
             if last_used_date and last_used_date != today:
-                # 日期不是今天，重置使用次数
                 reset_sql = """
                 UPDATE api_accounts 
                 SET used_today = 0, last_used_date = NULL 
@@ -1125,42 +1121,104 @@ class ApiAccountManager:
             
     def get_current_account(self) -> Dict:
         """获取当前账号"""
-        if not self.current_account:
-            self.load_accounts()
+        if not self.current_account and self.accounts:
+            self.current_account = self.accounts[0]
         # 每次获取时检查是否需要重置
         self.check_and_reset_daily_usage()
         return self.current_account
         
-    def switch_to_next_account(self) -> bool:
-        """切换到下一个可用账号"""
+
+    def switch_to_next_account(self, force_switch: bool = True) -> bool:
+        """切换到下一个可用账号
+        
+        Args:
+            force_switch: 是否强制切换（默认True，直接切换到下一个账号）
+        """
         if not self.accounts:
+            if DEBUG_MODE:
+                print("[账号切换] 没有账号列表")
             return False
             
         # 先检查是否需要重置
         self.check_and_reset_daily_usage()
-            
-        sql = "SELECT value FROM user_settings WHERE key = 'auto_switch_account'"
-        result = self.db_manager.execute_query(sql)
-        if not result or result[0]['value'] != '1':
-            return False
-            
+        
+        # 如果不是强制切换，检查自动切换设置
+        if not force_switch:
+            sql = "SELECT value FROM user_settings WHERE key = 'auto_switch_account'"
+            result = self.db_manager.execute_query(sql)
+            if not result or result[0]['value'] != '1':
+                if DEBUG_MODE:
+                    print("[账号切换] 自动切换未启用")
+                return False
+        
+        # 记录当前账号ID
+        current_id = self.current_account['id'] if self.current_account else None
+        current_name = self.current_account.get('account_name', '未知') if self.current_account else '无'
+
         current_index = self.get_current_account_index()
         total = len(self.accounts)
         
+        # 只有一个账号，无法切换
+        if total <= 1:
+            if DEBUG_MODE:
+                print(f"[账号切换] 只有 {total} 个账号，无法切换")
+            return False
+        
+        if DEBUG_MODE:
+            print(f"[账号切换] 当前账号: {current_name}, 总数: {total}, 强制切换: {force_switch}")
+        
+        # 记录已经尝试过的账号，避免无限循环
+        tried_indices = set()
+        
         for i in range(total):
             index = (current_index + i + 1) % total
+            if index in tried_indices:
+                continue
+            tried_indices.add(index)
+            
             account = self.accounts[index]
+            account_name = account.get('account_name', '未知')
             
-            # 检查账号是否可用
-            used_today = account.get('used_today', 0)
-            daily_limit = account.get('daily_limit', 100)
-            
-            if used_today < daily_limit:
-                self.current_account = account
-                return True
+            # 强制切换：只要不是当前账号就切换
+            if force_switch:
+                if account['id'] != current_id:
+                    self.current_account = account
+                    self._refresh_single_account(account['id'])
+                    if DEBUG_MODE:
+                        print(f"[账号切换] 强制切换到账号: {account_name}")
+                    return True
+            else:
+                # 正常切换：检查账号是否可用（额度未用完）
+                used_today = account.get('used_today', 0)
+                daily_limit = account.get('daily_limit', 100)
                 
-        return False
+                if used_today < daily_limit:
+                    self.current_account = account
+                    self._refresh_single_account(account['id'])
+                    if DEBUG_MODE:
+                        print(f"[账号切换] 正常切换到账号: {account_name} ({used_today}/{daily_limit})")
+                    return True
+                else:
+                    if DEBUG_MODE:
+                        print(f"[账号切换] 账号 {account_name} 额度已满 ({used_today}/{daily_limit})，跳过")
         
+        if DEBUG_MODE:
+            print("[账号切换] 没有可切换的账号")
+        return False
+
+    def _refresh_single_account(self, account_id: int):
+        """刷新单个账号的最新数据"""
+        query = "SELECT * FROM api_accounts WHERE id = ?"
+        result = self.db_manager.execute_query(query, (account_id,))
+        if result:
+            # 更新 accounts 列表中对应的账号
+            for i, acc in enumerate(self.accounts):
+                if acc['id'] == account_id:
+                    self.accounts[i] = result[0]
+                    if self.current_account and self.current_account['id'] == account_id:
+                        self.current_account = result[0]
+                    break
+
     def get_current_account_index(self) -> int:
         """获取当前账号索引"""
         if not self.current_account:
@@ -1213,7 +1271,7 @@ class ApiAccountManager:
                 self.db_manager.execute_update(sql, (today, today, account_id))
             
             # 重新加载账号数据
-            self.load_accounts()
+            self._refresh_accounts_list()
             
     def is_current_account_available(self) -> bool:
         """检查当前账号是否可用"""
@@ -1238,7 +1296,6 @@ class ApiAccountManager:
     def get_accounts(self) -> List[Dict]:
         """获取所有账号"""
         self.check_and_reset_daily_usage()
-        self.load_accounts()
         return self.accounts
         
     def get_usage_info(self) -> Dict:
@@ -1518,6 +1575,7 @@ class ApiAccountDialog(QDialog):
             
         account = self.accounts[row]
         
+        # 先将所有账号的 sort_order 重置
         sql1 = "UPDATE api_accounts SET sort_order = sort_order + 1"
         self.db_manager.execute_update(sql1)
         
@@ -1525,7 +1583,26 @@ class ApiAccountDialog(QDialog):
         self.db_manager.execute_update(sql2, (account['id'],))
         
         self.load_accounts()
-        QMessageBox.information(self, "成功", f"已将 '{account['account_name']}' 设为当前使用账号")
+        
+        # ========== 修复：通过 QApplication 查找主窗口 ==========
+        from PySide6.QtWidgets import QApplication
+        
+        main_window = None
+        for widget in QApplication.topLevelWidgets():
+            if widget.__class__.__name__ == 'ExpressQueryProGUI':
+                main_window = widget
+                break
+        
+        if main_window and hasattr(main_window, 'api_account_manager'):
+            # 强制刷新账号管理器的数据
+            main_window.api_account_manager.load_accounts()
+            # 重新加载当前账号到主窗口
+            main_window.load_current_api_account()
+            # 更新显示
+            main_window.update_api_account_display()
+        # ========================================
+        
+        QMessageBox.information(self, "成功", f"已将 '{account['account_name']}' 设为当前使用账号，界面已更新")
         
     def reset_usage(self, row: int):
         if row < 0 or row >= len(self.accounts):
@@ -1802,6 +1879,23 @@ class ApiAccountDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "导入失败", f"导入账号时发生错误：\n{str(e)}")
 
+    def closeEvent(self, event):
+        """关闭事件 - 通知主窗口刷新账号"""
+        # 通知主窗口刷新账号
+        from PySide6.QtWidgets import QApplication
+        
+        main_window = None
+        for widget in QApplication.topLevelWidgets():
+            if widget.__class__.__name__ == 'ExpressQueryProGUI':
+                main_window = widget
+                break
+        
+        if main_window and hasattr(main_window, 'api_account_manager'):
+            main_window.api_account_manager.load_accounts()
+            main_window.load_current_api_account()
+            main_window.update_api_account_display()
+        
+        event.accept()
 
 class ApiAccountEditDialog(QDialog):
     """API账号编辑对话框"""
@@ -2565,7 +2659,7 @@ class ExpressQueryThreadPro(QThread):
 
 class BatchRefreshThread(QThread):
     """批量刷新快递状态线程"""
-    finished = Signal(list)
+    finished = Signal(list, list)  # 修改：返回成功列表和失败列表
     progress = Signal(int, str)
     
     def __init__(self, tracking_list: List[Dict], customer: str, key: str):
@@ -2575,7 +2669,8 @@ class BatchRefreshThread(QThread):
         self.key = key
         
     def run(self):
-        results = []
+        success_results = []
+        failed_items = []
         total = len(self.tracking_list)
         
         for i, item in enumerate(self.tracking_list):
@@ -2598,20 +2693,22 @@ class BatchRefreshThread(QThread):
                 result = response.json()
                 
                 if result.get('status') == '200' or result.get('returnCode') == '200':
-                    results.append({
+                    success_results.append({
                         'tracking_number': tracking_num,
                         'success': True,
                         'data': result
                     })
                 else:
-                    results.append({
+                    failed_items.append({
                         'tracking_number': tracking_num,
+                        'company_code': company_code,
                         'success': False,
                         'error': result.get('message', '查询失败')
                     })
             except Exception as e:
-                results.append({
+                failed_items.append({
                     'tracking_number': tracking_num,
+                    'company_code': company_code,
                     'success': False,
                     'error': str(e)
                 })
@@ -2619,7 +2716,7 @@ class BatchRefreshThread(QThread):
             time.sleep(0.5)
             
         self.progress.emit(100, "刷新完成")
-        self.finished.emit(results)
+        self.finished.emit(success_results, failed_items)
 
 class BackupWorkerPro(QThread):
     """备份工作线程"""
@@ -2798,14 +2895,20 @@ class ExpressItemWidget(QWidget):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
         info_layout.setContentsMargins(0, 0, 0, 0)
-        
+    
+        # 第一行：状态标签（快递单号等）
         self.status_label = QLabel()
+        self.status_label.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.status_label.customContextMenuRequested.connect(self.show_status_context_menu)
         font = QFont()
         font.setBold(True)
         self.status_label.setFont(font)
         info_layout.addWidget(self.status_label)
         
+        # 第二行：备注按钮
         self.remark_btn = QPushButton()
+        self.remark_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remark_btn.customContextMenuRequested.connect(self.show_remark_context_menu)
         self.remark_btn.clicked.connect(self.on_remark_click)
         self.remark_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2821,7 +2924,10 @@ class ExpressItemWidget(QWidget):
         """)
         info_layout.addWidget(self.remark_btn)
         
+        # 第三行：物流轨迹按钮
         self.track_btn = QPushButton()
+        self.track_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.track_btn.customContextMenuRequested.connect(self.show_track_context_menu)
         self.track_btn.clicked.connect(self.on_track_click)
         self.track_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2861,6 +2967,144 @@ class ExpressItemWidget(QWidget):
         main_layout.addWidget(btn_widget)
         
         self.setLayout(main_layout)
+
+    def show_status_context_menu(self, pos):
+        """显示状态标签的右键菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet(MacaronStyle.get_main_style())
+        
+        tracking_num = self.express_data.get('tracking_number', '')
+        company_name = self.express_data.get('company_name', '')
+        status = self.express_data.get('status', '')
+        
+        # 复制快递单号
+        copy_num_action = menu.addAction(f"📋 复制单号: {tracking_num}")
+        copy_num_action.triggered.connect(lambda: self.copy_to_clipboard(tracking_num, "快递单号"))
+        
+        # 复制快递公司
+        copy_company_action = menu.addAction(f"🏢 复制公司: {company_name}")
+        copy_company_action.triggered.connect(lambda: self.copy_to_clipboard(company_name, "快递公司"))
+        
+        # 复制状态
+        copy_status_action = menu.addAction(f"📊 复制状态: {status}")
+        copy_status_action.triggered.connect(lambda: self.copy_to_clipboard(status, "状态"))
+        
+        menu.addSeparator()
+        
+        # 复制完整信息
+        copy_all_action = menu.addAction("📝 复制完整信息")
+        copy_all_action.triggered.connect(self.copy_full_info)
+        
+        menu.exec(self.status_label.mapToGlobal(pos))
+
+    def show_remark_context_menu(self, pos):
+        """显示备注按钮的右键菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet(MacaronStyle.get_main_style())
+        
+        remark = self.express_data.get('remark', '')
+        tracking_num = self.express_data.get('tracking_number', '')
+        
+        if remark:
+            copy_action = menu.addAction(f"📋 复制备注: {remark[:30]}{'...' if len(remark) > 30 else ''}")
+            copy_action.triggered.connect(lambda: self.copy_to_clipboard(remark, "备注"))
+        else:
+            menu.addAction("📋 暂无备注").setEnabled(False)
+        
+        menu.addSeparator()
+        
+        # 快捷备注
+        quick_menu = menu.addMenu("⚡ 快捷备注")
+        quick_items = ["衣服", "鞋子", "电子产品", "食品", "日用品", "书籍", "已签收", "待取件"]
+        for item in quick_items:
+            action = quick_menu.addAction(item)
+            action.triggered.connect(lambda checked, t=item: self.add_quick_remark_direct(t))
+        
+        edit_action = menu.addAction("✏️ 编辑备注")
+        edit_action.triggered.connect(self.on_remark_click)
+        
+        menu.exec(self.remark_btn.mapToGlobal(pos))
+
+    def show_track_context_menu(self, pos):
+        """显示物流轨迹按钮的右键菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet(MacaronStyle.get_main_style())
+        
+        latest_track = self.express_data.get('latest_track', '')
+        tracking_num = self.express_data.get('tracking_number', '')
+        
+        if latest_track:
+            copy_action = menu.addAction(f"📋 复制物流信息")
+            copy_action.triggered.connect(lambda: self.copy_to_clipboard(latest_track, "物流信息"))
+        else:
+            menu.addAction("📋 暂无物流信息").setEnabled(False)
+        
+        menu.addSeparator()
+        
+        # 查看详情
+        view_action = menu.addAction("🔍 查看完整轨迹")
+        view_action.triggered.connect(self.on_track_click)
+        
+        # 刷新
+        refresh_action = menu.addAction("🔄 刷新")
+        refresh_action.triggered.connect(self.on_refresh_click)
+        
+        # 在浏览器中搜索
+        search_action = menu.addAction("🌐 在网上搜索此单号")
+        search_action.triggered.connect(self.search_online)
+        
+        menu.exec(self.track_btn.mapToGlobal(pos))
+
+    def copy_to_clipboard(self, text: str, item_name: str = ""):
+        """复制文本到剪贴板"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        if item_name:
+            QMessageBox.information(self, "复制成功", f"{item_name}已复制到剪贴板")
+        else:
+            QMessageBox.information(self, "复制成功", "已复制到剪贴板")
+
+    def copy_full_info(self):
+        """复制完整信息"""
+        tracking_num = self.express_data.get('tracking_number', '')
+        company_name = self.express_data.get('company_name', '')
+        status = self.express_data.get('status', '')
+        remark = self.express_data.get('remark', '')
+        latest_track = self.express_data.get('latest_track', '')
+        last_update = self.express_data.get('last_update', '')
+        
+        full_info = f"""快递单号: {tracking_num}
+    快递公司: {company_name}
+    当前状态: {status}
+    备注: {remark if remark else '无'}
+    最新物流: {latest_track if latest_track else '暂无'}
+    最后更新: {last_update}"""
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setText(full_info)
+        QMessageBox.information(self, "复制成功", "完整快递信息已复制到剪贴板")
+
+    def add_quick_remark_direct(self, text: str):
+        """直接添加快捷备注"""
+        current_remark = self.express_data.get('remark', '')
+        if current_remark:
+            new_remark = f"{current_remark}、{text}"
+        else:
+            new_remark = text
+        
+        self.remark_changed.emit(self.express_id, new_remark)
+        self.express_data['remark'] = new_remark
+        self.update_display()
+        QMessageBox.information(self, "成功", f"已添加备注: {text}")
+
+    def search_online(self):
+        """在网上搜索快递单号"""
+        import webbrowser
+        tracking_num = self.express_data.get('tracking_number', '')
+        if tracking_num:
+            # 使用快递100搜索
+            url = f"https://www.kuaidi100.com/all/{tracking_num}.shtml"
+            webbrowser.open(url)
         
     def update_display(self):
         """更新显示"""
@@ -2967,16 +3211,94 @@ class ExpressItemWidget(QWidget):
         self.apply_item_style()
             
     def on_image_click(self):
-        """点击图片"""
+        """点击图片 - 显示右键菜单"""
         menu = QMenu(self)
         menu.setStyleSheet(MacaronStyle.get_main_style())
-        view_action = menu.addAction("查看大图")
-        add_action = menu.addAction("选择文件添加")
-        paste_action = menu.addAction("从剪贴板粘贴")
-        delete_action = menu.addAction("删除截图")
         
+        # 查看大图（仅当有截图时可用）
+        view_action = menu.addAction("🔍 查看大图")
+        view_action.setIcon(QIcon.fromTheme("zoom-in"))
+        if not self.express_data.get('screenshot'):
+            view_action.setEnabled(False)
+        
+        menu.addSeparator()
+        
+        # 添加截图子菜单
+        add_menu = menu.addMenu("➕ 添加截图")
+        add_menu.setIcon(QIcon.fromTheme("list-add"))
+        
+        # 从文件选择
+        from_file_action = add_menu.addAction("📁 从文件选择...")
+        from_file_action.triggered.connect(self.add_screenshot_from_file)
+        
+        # 从剪贴板粘贴
+        from_clipboard_action = add_menu.addAction("📋 从剪贴板粘贴")
+        from_clipboard_action.triggered.connect(self.add_screenshot_from_clipboard)
+        
+        # 从URL下载（新增功能）
+        from_url_action = add_menu.addAction("🌐 从URL下载...")
+        from_url_action.triggered.connect(self.add_screenshot_from_url)
+        
+        menu.addSeparator()
+        
+        # 编辑截图子菜单（仅当有截图时可用）
+        edit_menu = menu.addMenu("✏️ 编辑截图")
+        edit_menu.setIcon(QIcon.fromTheme("edit"))
+        if not self.express_data.get('screenshot'):
+            edit_menu.setEnabled(False)
+        
+        # 旋转图片
+        rotate_menu = edit_menu.addMenu("🔄 旋转")
+        rotate_left_action = rotate_menu.addAction("↪️ 向左旋转90°")
+        rotate_left_action.triggered.connect(lambda: self.rotate_screenshot(-90))
+        rotate_right_action = rotate_menu.addAction("↩️ 向右旋转90°")
+        rotate_right_action.triggered.connect(lambda: self.rotate_screenshot(90))
+        rotate_180_action = rotate_menu.addAction("🔃 旋转180°")
+        rotate_180_action.triggered.connect(lambda: self.rotate_screenshot(180))
+        
+        # 裁剪图片
+        crop_action = edit_menu.addAction("✂️ 裁剪...")
+        crop_action.triggered.connect(self.crop_screenshot)
+        
+        menu.addSeparator()
+        
+        # 导出截图
+        export_menu = menu.addMenu("💾 导出截图")
+        export_menu.setIcon(QIcon.fromTheme("document-save"))
+        if not self.express_data.get('screenshot'):
+            export_menu.setEnabled(False)
+        
+        export_original_action = export_menu.addAction("📷 导出原图...")
+        export_original_action.triggered.connect(lambda: self.export_screenshot(False))
+        export_with_info_action = export_menu.addAction("📄 导出带信息...")
+        export_with_info_action.triggered.connect(lambda: self.export_screenshot(True))
+        
+        # 复制到剪贴板
+        copy_action = menu.addAction("📋 复制到剪贴板")
+        copy_action.setIcon(QIcon.fromTheme("edit-copy"))
+        if not self.express_data.get('screenshot'):
+            copy_action.setEnabled(False)
+        copy_action.triggered.connect(self.copy_screenshot_to_clipboard)
+        
+        menu.addSeparator()
+        
+        # 删除截图
+        delete_action = menu.addAction("🗑️ 删除截图")
+        delete_action.setIcon(QIcon.fromTheme("edit-delete"))
+        if not self.express_data.get('screenshot'):
+            delete_action.setEnabled(False)
+        delete_action.triggered.connect(self.delete_screenshot)
+        
+        menu.addSeparator()
+        
+        # 截图信息
+        info_action = menu.addAction("ℹ️ 截图信息")
+        info_action.triggered.connect(self.show_screenshot_info)
+        
+        # 显示菜单
         action = menu.exec(QCursor.pos())
         
+        # 处理查看大图（因为需要特殊处理）
         if action == view_action:
             if self.express_data.get('screenshot'):
                 dialog = ImageViewerDialog(
@@ -2985,16 +3307,332 @@ class ExpressItemWidget(QWidget):
                     self
                 )
                 dialog.exec()
+    
+    def add_screenshot_from_url(self):
+        """从URL下载截图"""
+        from PySide6.QtWidgets import QInputDialog
+        
+        url, ok = QInputDialog.getText(
+            self, "从URL下载", 
+            "请输入图片URL地址：",
+            QLineEdit.Normal,
+            "https://"
+        )
+        
+        if not ok or not url.strip():
+            return
+        
+        # 显示进度提示
+        progress_dialog = QProgressDialog("正在下载图片...", "取消", 0, 0, self)
+        progress_dialog.setWindowTitle("下载中")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        
+        # 使用线程下载
+        class DownloadThread(QThread):
+            finished = Signal(bool, str, str)  # success, image_data, error_msg
+            
+            def __init__(self, url):
+                super().__init__()
+                self.url = url
+            
+            def run(self):
+                try:
+                    response = requests.get(self.url, timeout=30, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    })
+                    
+                    if response.status_code == 200:
+                        content_type = response.headers.get('content-type', '')
+                        if 'image' in content_type or self.url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                            image_data = base64.b64encode(response.content).decode('utf-8')
+                            self.finished.emit(True, image_data, "")
+                        else:
+                            self.finished.emit(False, "", "URL返回的不是图片格式")
+                    else:
+                        self.finished.emit(False, "", f"下载失败：HTTP {response.status_code}")
+                except requests.exceptions.Timeout:
+                    self.finished.emit(False, "", "下载超时，请检查网络连接")
+                except requests.exceptions.ConnectionError:
+                    self.finished.emit(False, "", "网络连接失败，请检查网络")
+                except Exception as e:
+                    self.finished.emit(False, "", f"下载失败：{str(e)}")
+        
+        self.download_thread = DownloadThread(url.strip())
+        
+        def on_download_finished(success, image_data, error_msg):
+            progress_dialog.close()
+            if success:
+                # 验证图片是否有效
+                try:
+                    image_bytes = base64.b64decode(image_data)
+                    pixmap = QPixmap()
+                    if pixmap.loadFromData(image_bytes):
+                        self.screenshot_changed.emit(self.express_id, image_data)
+                        self.express_data['screenshot'] = image_data
+                        self.update_display()
+                        QMessageBox.information(self, "成功", "图片已成功下载并添加")
+                    else:
+                        QMessageBox.warning(self, "错误", "下载的文件不是有效的图片格式")
+                except Exception as e:
+                    QMessageBox.warning(self, "错误", f"图片处理失败：{str(e)}")
             else:
-                QMessageBox.information(self, "提示", "暂无截图")
-        elif action == add_action:
-            self.add_screenshot_from_file()
-        elif action == paste_action:
-            self.add_screenshot_from_clipboard()
-        elif action == delete_action:
+                QMessageBox.warning(self, "下载失败", error_msg)
+        
+        self.download_thread.finished.connect(on_download_finished)
+        self.download_thread.start()
+        
+        # 如果用户取消
+        if progress_dialog.wasCanceled():
+            if self.download_thread.isRunning():
+                self.download_thread.terminate()
+                self.download_thread.wait()
+    
+    def rotate_screenshot(self, angle: int):
+        """旋转截图"""
+        screenshot = self.express_data.get('screenshot', '')
+        if not screenshot:
+            QMessageBox.warning(self, "提示", "没有可旋转的截图")
+            return
+        
+        try:
+            # 解码图片
+            image_bytes = base64.b64decode(screenshot)
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            
+            # 旋转图片
+            transform = QTransform().rotate(angle)
+            rotated_pixmap = pixmap.transformed(transform, Qt.SmoothTransformation)
+            
+            # 保存旋转后的图片
+            byte_array = QByteArray()
+            buffer = QBuffer(byte_array)
+            buffer.open(QIODevice.WriteOnly)
+            rotated_pixmap.save(buffer, "PNG")
+            
+            new_image_data = base64.b64encode(byte_array.data()).decode('utf-8')
+            
+            # 更新
+            self.screenshot_changed.emit(self.express_id, new_image_data)
+            self.express_data['screenshot'] = new_image_data
+            self.update_display()
+            
+            QMessageBox.information(self, "成功", f"图片已旋转 {angle}°")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"旋转图片失败：{str(e)}")
+    
+    def crop_screenshot(self):
+        """裁剪截图"""
+        screenshot = self.express_data.get('screenshot', '')
+        if not screenshot:
+            QMessageBox.warning(self, "提示", "没有可裁剪的截图")
+            return
+        
+        try:
+            # 解码图片
+            image_bytes = base64.b64decode(screenshot)
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            
+            # 创建裁剪对话框
+            dialog = CropImageDialog(pixmap, self)
+            if dialog.exec() == QDialog.Accepted:
+                cropped_pixmap = dialog.get_cropped_image()
+                if cropped_pixmap:
+                    # 保存裁剪后的图片
+                    byte_array = QByteArray()
+                    buffer = QBuffer(byte_array)
+                    buffer.open(QIODevice.WriteOnly)
+                    cropped_pixmap.save(buffer, "PNG")
+                    
+                    new_image_data = base64.b64encode(byte_array.data()).decode('utf-8')
+                    
+                    # 更新
+                    self.screenshot_changed.emit(self.express_id, new_image_data)
+                    self.express_data['screenshot'] = new_image_data
+                    self.update_display()
+                    
+                    QMessageBox.information(self, "成功", "图片已裁剪")
+                    
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"裁剪图片失败：{str(e)}")
+    
+    def export_screenshot(self, include_info: bool = False):
+        """导出截图"""
+        screenshot = self.express_data.get('screenshot', '')
+        if not screenshot:
+            return
+        
+        tracking_num = self.express_data.get('tracking_number', 'unknown')
+        
+        # 选择保存路径
+        default_name = f"{tracking_num}_screenshot"
+        if include_info:
+            default_name += "_with_info"
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存截图", 
+            f"{default_name}.png",
+            "PNG图片 (*.png);;JPEG图片 (*.jpg);;所有文件 (*.*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            image_bytes = base64.b64decode(screenshot)
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            
+            if include_info:
+                # 创建带信息的图片
+                info_pixmap = self.create_screenshot_with_info(pixmap)
+                info_pixmap.save(file_path)
+            else:
+                pixmap.save(file_path)
+            
+            QMessageBox.information(self, "成功", f"截图已保存到：\n{file_path}")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"保存截图失败：{str(e)}")
+    
+    def create_screenshot_with_info(self, original_pixmap: QPixmap) -> QPixmap:
+        """创建带信息的截图"""
+        tracking_num = self.express_data.get('tracking_number', '')
+        company_name = self.express_data.get('company_name', '')
+        status = self.express_data.get('status', '')
+        remark = self.express_data.get('remark', '')
+        last_update = self.express_data.get('last_update', '')
+        
+        # 计算新图片尺寸
+        info_height = 120
+        new_width = max(original_pixmap.width(), 400)
+        new_height = original_pixmap.height() + info_height
+        
+        # 创建新画布
+        result_pixmap = QPixmap(new_width, new_height)
+        result_pixmap.fill(Qt.white)
+        
+        # 绘制
+        painter = QPainter(result_pixmap)
+        
+        # 绘制信息区域背景
+        painter.fillRect(0, 0, new_width, info_height, QColor(240, 248, 255))
+        
+        # 绘制边框
+        painter.setPen(QColor(200, 200, 200))
+        painter.drawRect(0, 0, new_width - 1, info_height - 1)
+        
+        # 绘制文字信息
+        painter.setPen(Qt.black)
+        font = QFont("Microsoft YaHei", 10)
+        painter.setFont(font)
+        
+        y = 20
+        painter.drawText(10, y, f"快递单号: {tracking_num}")
+        y += 20
+        painter.drawText(10, y, f"快递公司: {company_name}")
+        y += 20
+        painter.drawText(10, y, f"当前状态: {status}")
+        y += 20
+        if remark:
+            painter.drawText(10, y, f"备注: {remark[:30]}{'...' if len(remark) > 30 else ''}")
+            y += 20
+        painter.drawText(10, y, f"最后更新: {last_update}")
+        
+        # 绘制原图
+        painter.drawPixmap(0, info_height, original_pixmap)
+        
+        painter.end()
+        
+        return result_pixmap
+    
+    def copy_screenshot_to_clipboard(self):
+        """复制截图到剪贴板"""
+        screenshot = self.express_data.get('screenshot', '')
+        if not screenshot:
+            QMessageBox.warning(self, "提示", "没有可复制的截图")
+            return
+        
+        try:
+            image_bytes = base64.b64decode(screenshot)
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            
+            clipboard = QApplication.clipboard()
+            clipboard.setPixmap(pixmap)
+            
+            QMessageBox.information(self, "成功", "截图已复制到剪贴板")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"复制截图失败：{str(e)}")
+    
+    def delete_screenshot(self):
+        """删除截图"""
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除此截图吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
             self.screenshot_changed.emit(self.express_id, "")
             self.express_data['screenshot'] = ""
             self.update_display()
+            QMessageBox.information(self, "成功", "截图已删除")
+    
+    def show_screenshot_info(self):
+        """显示截图信息"""
+        screenshot = self.express_data.get('screenshot', '')
+        if not screenshot:
+            QMessageBox.information(self, "截图信息", "暂无截图")
+            return
+        
+        try:
+            image_bytes = base64.b64decode(screenshot)
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            
+            # 计算文件大小
+            size_kb = len(image_bytes) / 1024
+            
+            info_text = f"""
+截图信息：
+━━━━━━━━━━━━━━━━━━━━
+图片尺寸: {pixmap.width()} x {pixmap.height()} 像素
+文件大小: {size_kb:.2f} KB
+图片格式: PNG
+是否有效: {'是' if not pixmap.isNull() else '否'}
+━━━━━━━━━━━━━━━━━━━━
+关联单号: {self.express_data.get('tracking_number', '')}
+            """
+            
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("截图信息")
+            msg_box.setText(info_text)
+            msg_box.setIcon(QMessageBox.Information)
+            
+            # 添加预览按钮
+            preview_btn = msg_box.addButton("预览", QMessageBox.ActionRole)
+            msg_box.addButton(QMessageBox.Ok)
+            
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == preview_btn:
+                dialog = ImageViewerDialog(
+                    screenshot,
+                    self.express_data.get('tracking_number', ''),
+                    self
+                )
+                dialog.exec()
+                
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"获取截图信息失败：{str(e)}")
+    
+
             
     def add_screenshot_from_file(self):
         """从文件添加截图"""
@@ -3232,6 +3870,22 @@ class ExpressDetailDialog(QDialog):
             if reply == QMessageBox.Yes:
                 self.parent_gui.show_settings()
             return
+        
+        # 检查当前账号是否可用
+        if self.parent_gui.api_account_manager:
+            self.parent_gui.api_account_manager.check_and_reset_daily_usage()
+            
+            if not self.parent_gui.api_account_manager.is_current_account_available():
+                # 尝试切换到下一个账号（正常切换，不强制）
+                if self.parent_gui.api_account_manager.switch_to_next_account(force_switch=False):
+                    self.parent_gui.load_current_api_account()
+                    usage_info = self.parent_gui.api_account_manager.get_usage_info()
+                    QMessageBox.information(self, "提示", 
+                        f"当前账号额度已用完，已自动切换到备用账号\n"
+                        f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}")
+                else:
+                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    return
             
         self.refresh_btn.setEnabled(False)
         self.refresh_btn.setText("刷新中...")
@@ -3257,7 +3911,28 @@ class ExpressDetailDialog(QDialog):
             QMessageBox.information(self, "成功", "快递信息已更新")
         else:
             error_msg = result.get('error', '未知错误')
-            QMessageBox.critical(self, "刷新失败", f"错误信息：{error_msg}")
+            
+            if self.parent_gui.api_account_manager:
+                # 尝试切换到下一个账号（强制切换）
+                if self.parent_gui.api_account_manager.switch_to_next_account(force_switch=True):
+                    self.parent_gui.load_current_api_account()
+                    
+                    reply = QMessageBox.question(
+                        self, "刷新失败",
+                        f"刷新失败：{error_msg}\n\n"
+                        f"已自动切换到备用账号，是否重试？",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        self.refresh_data()
+                        return
+                    else:
+                        QMessageBox.critical(self, "刷新失败", f"错误信息：{error_msg}")
+                else:
+                    QMessageBox.critical(self, "刷新失败", f"错误信息：{error_msg}\n\n无备用账号可切换")
+            else:
+                QMessageBox.critical(self, "刷新失败", f"错误信息：{error_msg}")
         
     def load_data(self):
         """从数据库加载最新数据"""
@@ -3852,7 +4527,9 @@ class BackupRestoreDialogPro(QDialog):
         """应用筛选条件"""
         start_date = self.date_start.date().toPython()
         end_date = self.date_end.date().toPython()
-        end_date = end_date.replace(hour=23, minute=59, second=59)
+        # 将 date 转换为 datetime
+        start_date = datetime.combine(start_date, time(0, 0, 0))
+        end_date = datetime.combine(end_date, time(23, 59, 59))
         
         type_filter = self.type_filter.currentText()
         type_map = {
@@ -4170,6 +4847,7 @@ class ExpressQueryProGUI(QMainWindow):
         
         self.company_codes = {
             "自动识别": "",
+            # 国内主流快递
             "顺丰速运": "shunfeng",
             "圆通速递": "yuantong",
             "中通快递": "zhongtong",
@@ -4177,11 +4855,39 @@ class ExpressQueryProGUI(QMainWindow):
             "申通快递": "shentong",
             "京东物流": "jd",
             "中国邮政": "youzhengguo",
+            "EMS": "ems",
             "百世快递": "huitongkuaidi",
             "天天快递": "tiantian",
             "德邦快递": "debangwuliu",
             "极兔速递": "jtexpress",
-            "EMS": "ems"
+            # 其他国内快递
+            "宅急送": "zhaijisong",
+            "优速快递": "youshuwuliu",
+            "跨越速运": "kuayue",
+            "速尔快递": "suer",
+            "全峰快递": "quanfengkuaidi",
+            "国通快递": "guotongkuaidi",
+            "快捷快递": "kuaijiesudi",
+            "龙邦快递": "longbanwuliu",
+            "信丰物流": "xinfengwuliu",
+            "增益快递": "zengyikuaidi",
+            "联昊通": "lianhaowuliu",
+            "全一快递": "quanyikuaidi",
+            "如风达": "rufengda",
+            "安能物流": "annengwuliu",
+            "壹米滴答": "yimidida",
+            "德坤物流": "dekunwuliu",
+            "中铁快运": "zhongtiewuliu",
+            "民航快递": "minhangkuaidi",
+            "菜鸟裹裹": "cainiao",
+            "丹鸟物流": "danniao",
+            # 国际快递
+            "联邦快递": "fedex",
+            "DHL": "dhl",
+            "UPS": "ups",
+            "TNT": "tnt",
+            "USPS": "usps",
+            "亚马逊物流": "amazon",
         }
         
         self.category_widgets = {}
@@ -4245,15 +4951,34 @@ class ExpressQueryProGUI(QMainWindow):
     def load_current_api_account(self):
         """加载当前API账号"""
         if self.api_account_manager:
+            # 先强制检查并重置每日使用次数
+            self.api_account_manager.check_and_reset_daily_usage()
+            # 注意：不要调用 load_accounts()，因为它会重置 current_account 为第一个账号
+            
             account = self.api_account_manager.get_current_account()
             if account:
                 self.customer = account.get('customer', '')
                 self.key = account.get('auth_key', '')
+                self.update_api_account_display()
+                
+                if DEBUG_MODE:
+                    print(f"[账号加载] 当前账号: {account.get('account_name', '')}")
+                    print(f"[账号加载] Customer: {self.customer[:10] if self.customer else 'empty'}...")
+                    print(f"[账号加载] Auth Key: {self.key[:10] if self.key else 'empty'}...")
+                
                 return True
             else:
                 self.customer = ""
                 self.key = ""
+                self.update_api_account_display()
+                
+                if DEBUG_MODE:
+                    print("[账号加载] 没有可用的API账号")
+                
                 return False
+        else:
+            if DEBUG_MODE:
+                print("[账号加载] api_account_manager 为 None")
         return False
         
     def check_api_accounts(self):
@@ -4330,6 +5055,33 @@ class ExpressQueryProGUI(QMainWindow):
         if not self.load_current_api_account():
             QTimer.singleShot(500, self.check_api_accounts)
 
+        copy_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
+        copy_shortcut.activated.connect(self.copy_selected_content)
+
+    def copy_selected_content(self):
+        """复制当前选中的内容"""
+        # 获取当前焦点控件
+        focus_widget = QApplication.focusWidget()
+        
+        if isinstance(focus_widget, QLineEdit):
+            if focus_widget.hasSelectedText():
+                focus_widget.copy()
+            else:
+                focus_widget.selectAll()
+                focus_widget.copy()
+        elif isinstance(focus_widget, QTextEdit):
+            if focus_widget.textCursor().hasSelection():
+                focus_widget.copy()
+            else:
+                focus_widget.selectAll()
+                focus_widget.copy()
+        elif isinstance(focus_widget, QTableWidget):
+            selected_items = focus_widget.selectedItems()
+            if selected_items:
+                text = selected_items[0].text()
+                QApplication.clipboard().setText(text)
+                self.status_bar.showMessage("已复制到剪贴板", 2000)
+
     def focus_global_search(self):
         """聚焦到全局搜索框"""
         self.global_search.setFocus()
@@ -4352,12 +5104,11 @@ class ExpressQueryProGUI(QMainWindow):
         user_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
         toolbar_layout.addWidget(user_label)
         
-        if self.api_account_manager:
-            account = self.api_account_manager.get_current_account()
-            if account:
-                account_label = QLabel(f" | 🔑 API账号: {account.get('account_name', '')}")
-                account_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
-                toolbar_layout.addWidget(account_label)
+        # 保存账号标签的引用
+        self.api_account_label = QLabel()
+        self.api_account_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
+        toolbar_layout.addWidget(self.api_account_label)
+        self.update_api_account_display()  # 初始化显示
         
         toolbar_layout.addStretch()
         
@@ -4435,6 +5186,20 @@ class ExpressQueryProGUI(QMainWindow):
             }}
         """)
         toolbar.addWidget(add_btn)
+    
+        # 添加批量导入按钮
+        batch_import_btn = QPushButton("📦 批量导入")
+        batch_import_btn.setToolTip("从文件或粘贴板批量导入快递单号")
+        batch_import_btn.clicked.connect(self.batch_import_express)
+        batch_import_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.PURPLE_LAVENDER.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.PURPLE_WISTERIA.name()};
+            }}
+        """)
+        toolbar.addWidget(batch_import_btn)
         
         toolbar.addStretch()
         
@@ -5019,7 +5784,21 @@ class ExpressQueryProGUI(QMainWindow):
         if not self.customer or not self.key:
             QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
             return
+        
+        # 检查当前账号是否可用
+        if self.api_account_manager:
+            self.api_account_manager.check_and_reset_daily_usage()
             
+            if not self.api_account_manager.is_current_account_available():
+                # 尝试切换到下一个账号（正常切换，不强制）
+                if self.api_account_manager.switch_to_next_account(force_switch=False):
+                    self.load_current_api_account()
+                    usage_info = self.api_account_manager.get_usage_info()
+                    self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
+                else:
+                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    return
+                
         self.status_bar.showMessage(f"正在刷新 {tracking_num}...")
         
         thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
@@ -5030,12 +5809,87 @@ class ExpressQueryProGUI(QMainWindow):
     def on_single_refresh_finished(self, result: dict, tracking_num: str):
         """单个快递刷新完成"""
         if result.get('success'):
-            # update_express_summary 会记录时效数据
             self.update_express_summary(result['data'])
             self.status_bar.showMessage(f"{tracking_num} 刷新成功", 3000)
             self.load_summary_data()
+            
+            if self.api_account_manager:
+                self.api_account_manager.increment_usage()
+                self.update_api_account_display()
         else:
-            self.status_bar.showMessage(f"{tracking_num} 刷新失败", 3000)
+            # 刷新失败，尝试切换账号重试
+            error_msg = result.get('error', '未知错误')
+            
+            if DEBUG_MODE:
+                print(f"[刷新失败] {tracking_num}: {error_msg}")
+            
+            if self.api_account_manager:
+                # 记录当前账号
+                old_account = self.api_account_manager.current_account
+                old_account_id = old_account.get('id') if old_account else None
+                old_account_name = old_account.get('account_name', '未知') if old_account else '无'
+                
+                if DEBUG_MODE:
+                    print(f"[刷新失败] 当前账号: {old_account_name}, 尝试切换...")
+                
+                # 尝试切换到下一个账号（强制切换）
+                if self.api_account_manager.switch_to_next_account(force_switch=True):
+                    new_account = self.api_account_manager.current_account
+                    new_account_id = new_account.get('id') if new_account else None
+                    new_account_name = new_account.get('account_name', '未知') if new_account else '无'
+                    
+                    if old_account_id != new_account_id:
+                        if DEBUG_MODE:
+                            print(f"[刷新失败] 切换到账号: {new_account_name}")
+                        
+                        if not self.load_current_api_account():
+                            self.status_bar.showMessage(f"{tracking_num} 刷新失败（切换账号失败）", 3000)
+                            return
+                        
+                        self.update_api_account_display()
+                        self.status_bar.showMessage(f"{tracking_num} 刷新失败，正在切换账号重试...", 3000)
+                        
+                        # 获取该快递的公司代码
+                        company_code = ""
+                        if self.user_manager.current_user_db:
+                            sql = "SELECT company_code FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+                            query_result = self.user_manager.current_user_db.execute_query(sql, (tracking_num,))
+                            if query_result:
+                                company_code = query_result[0].get('company_code', '')
+                        
+                        # 用新账号重试
+                        thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
+                        thread.finished.connect(lambda r: self.on_single_refresh_retry_finished(r, tracking_num))
+                        thread.start()
+                        self.query_threads.append(thread)
+                        return
+                    else:
+                        if DEBUG_MODE:
+                            print(f"[刷新失败] 切换后账号未变化: {new_account_name}")
+                        self.status_bar.showMessage(f"{tracking_num} 刷新失败（无可用备用账号）", 3000)
+                else:
+                    if DEBUG_MODE:
+                        print("[刷新失败] switch_to_next_account 返回 False")
+                    self.status_bar.showMessage(f"{tracking_num} 刷新失败，无备用账号可切换", 3000)
+            else:
+                if DEBUG_MODE:
+                    print("[刷新失败] api_account_manager 为 None")
+                self.status_bar.showMessage(f"{tracking_num} 刷新失败: {error_msg}", 5000)
+
+    def on_single_refresh_retry_finished(self, result: dict, tracking_num: str):
+        """单个快递刷新重试完成"""
+        if result.get('success'):
+            self.update_express_summary(result['data'])
+            self.status_bar.showMessage(f"{tracking_num} 刷新成功（切换账号后）", 3000)
+            self.load_summary_data()
+            
+            # 更新配额显示
+            if self.api_account_manager:
+                self.api_account_manager.increment_usage()
+                self.update_api_account_display()
+        else:
+            error_msg = result.get('error', '未知错误')
+            self.status_bar.showMessage(f"{tracking_num} 刷新失败: {error_msg}", 5000)
             
     def on_view_details(self, express_data: Dict):
         """查看快递详情"""
@@ -5067,7 +5921,178 @@ class ExpressQueryProGUI(QMainWindow):
         thread.finished.connect(lambda r: self.on_manual_add_finished(r, tracking_num, company_code, company_name))
         thread.start()
         self.query_threads.append(thread)
+
+    def batch_import_express(self):
+        """批量导入快递单号"""
+        if not self.customer or not self.key:
+            reply = QMessageBox.question(
+                self, "提示",
+                "未配置API账号，无法查询快递。是否现在添加账号？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.show_settings()
+            return
+            
+        dialog = BatchImportDialog(self.company_codes, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+            
+        numbers = dialog.get_imported_numbers()
+        if not numbers:
+            return
+            
+        # 过滤已存在的单号
+        to_import = []
+        existing_numbers = []
         
+        if self.user_manager.current_user_db:
+            for item in numbers:
+                check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+                existing = self.user_manager.current_user_db.execute_query(check_sql, (item['number'],))
+                if existing:
+                    existing_numbers.append(item['number'])
+                else:
+                    to_import.append(item)
+                    
+        if existing_numbers:
+            reply = QMessageBox.question(
+                self, "重复单号",
+                f"有 {len(existing_numbers)} 个单号已存在于汇总中，是否跳过继续导入其余单号？\n\n"
+                f"重复单号：{', '.join(existing_numbers[:5])}"
+                f"{'...' if len(existing_numbers) > 5 else ''}",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+                
+        if not to_import:
+            QMessageBox.information(self, "提示", "所有单号都已存在于汇总中")
+            return
+            
+        # 确认导入
+        reply = QMessageBox.question(
+            self, "确认导入",
+            f"即将导入 {len(to_import)} 个快递单号，是否继续？\n\n"
+            f"导入后系统将自动查询物流信息。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+            
+        # 开始批量导入
+        self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, len(to_import))
+        self.global_progress.setValue(0)
+        self.status_bar.showMessage(f"正在批量导入 {len(to_import)} 个单号...")
+        
+        self.batch_import_list = to_import
+        self.batch_import_index = 0
+        self.batch_import_results = []
+        
+        self.process_next_batch_import()
+        
+    def process_next_batch_import(self):
+        """处理下一个批量导入"""
+        if self.batch_import_index >= len(self.batch_import_list):
+            self.finish_batch_import()
+            return
+            
+        item = self.batch_import_list[self.batch_import_index]
+        tracking_num = item['number']
+        company_code = item['company_code']
+        
+        self.global_progress.setValue(self.batch_import_index)
+        self.status_bar.showMessage(f"正在查询: {tracking_num} ({self.batch_import_index + 1}/{len(self.batch_import_list)})")
+        
+        thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
+        thread.finished.connect(lambda r, num=tracking_num: self.on_batch_import_finished(r, num))
+        thread.start()
+        self.query_threads.append(thread)
+        
+    def on_batch_import_finished(self, result: dict, tracking_num: str):
+        """单个批量导入完成"""
+        item = self.batch_import_list[self.batch_import_index]
+        
+        if result.get('success'):
+            self.add_to_summary(result['data'], item['company_name'])
+            self.batch_import_results.append({
+                'number': tracking_num,
+                'success': True,
+                'message': '导入成功'
+            })
+            self.batch_import_index += 1
+            QTimer.singleShot(300, self.process_next_batch_import)
+        else:
+            error_msg = result.get('error', '未知错误')
+            
+            retried = False
+            if self.api_account_manager:
+                # 尝试切换到下一个账号（强制切换）
+                if self.api_account_manager.switch_to_next_account(force_switch=True):
+                    self.load_current_api_account()
+                    # 用新账号重试这个单号
+                    thread = ExpressQueryThreadPro(tracking_num, item['company_code'], self.customer, self.key)
+                    thread.finished.connect(lambda r, num=tracking_num: self.on_batch_import_retry_finished(r, num, item))
+                    thread.start()
+                    self.query_threads.append(thread)
+                    retried = True
+            
+            if not retried:
+                self.batch_import_results.append({
+                    'number': tracking_num,
+                    'success': False,
+                    'message': error_msg
+                })
+                self.batch_import_index += 1
+                QTimer.singleShot(300, self.process_next_batch_import)
+
+    def on_batch_import_retry_finished(self, result: dict, tracking_num: str, item: dict):
+        """批量导入重试完成"""
+        if result.get('success'):
+            self.add_to_summary(result['data'], item['company_name'])
+            self.batch_import_results.append({
+                'number': tracking_num,
+                'success': True,
+                'message': '导入成功（切换账号后）'
+            })
+        else:
+            error_msg = result.get('error', '未知错误')
+            self.batch_import_results.append({
+                'number': tracking_num,
+                'success': False,
+                'message': f"{error_msg}（已切换账号重试）"
+            })
+        
+        self.batch_import_index += 1
+        QTimer.singleShot(300, self.process_next_batch_import)
+        
+    def finish_batch_import(self):
+        """完成批量导入"""
+        self.global_progress.setVisible(False)
+        
+        success_count = sum(1 for r in self.batch_import_results if r['success'])
+        fail_count = len(self.batch_import_results) - success_count
+        
+        # 刷新汇总显示
+        self.load_summary_data()
+        
+        # 显示结果摘要
+        summary = f"批量导入完成！\n\n成功：{success_count} 个\n失败：{fail_count} 个"
+        
+        if fail_count > 0:
+            failed_list = [f"{r['number']}: {r['message']}" for r in self.batch_import_results if not r['success']]
+            detail = "\n\n失败详情（前10个）：\n" + "\n".join(failed_list[:10])
+            if len(failed_list) > 10:
+                detail += f"\n... 共 {len(failed_list)} 个失败"
+            summary += detail
+
+        print(summary)  # 在控制台输出结果摘要
+        QMessageBox.information(self, "批量导入完成", summary)
+        self.status_bar.showMessage(f"批量导入完成：成功 {success_count}，失败 {fail_count}", 5000)
+
+
     def on_manual_add_finished(self, result: dict, tracking_num: str, company_code: str, company_name: str):
         """手动添加完成"""
         if result.get('success'):
@@ -5243,6 +6268,20 @@ class ExpressQueryProGUI(QMainWindow):
         if not items:
             QMessageBox.information(self, "提示", "该分类下没有快递需要刷新")
             return
+        
+        # 检查当前账号是否可用
+        if self.api_account_manager:
+            self.api_account_manager.check_and_reset_daily_usage()
+            
+            if not self.api_account_manager.is_current_account_available():
+                # 尝试切换到下一个账号（正常切换，不强制）
+                if self.api_account_manager.switch_to_next_account(force_switch=False):
+                    self.load_current_api_account()
+                    usage_info = self.api_account_manager.get_usage_info()
+                    self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
+                else:
+                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    return
             
         tracking_list = []
         for item in items:
@@ -5255,7 +6294,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.status_bar.showMessage(f"正在刷新 {category_widget.category_name} 分类...")
         
         self.batch_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
-        self.batch_thread.finished.connect(self.on_batch_refresh_finished)
+        self.batch_thread.finished.connect(self.on_batch_refresh_finished)  # 现在接收两个参数
         self.batch_thread.progress.connect(self.on_batch_progress)
         self.batch_thread.start()
         
@@ -5264,6 +6303,20 @@ class ExpressQueryProGUI(QMainWindow):
         if not self.customer or not self.key:
             QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
             return
+        
+        # 检查当前账号是否可用
+        if self.api_account_manager:
+            self.api_account_manager.check_and_reset_daily_usage()
+            
+            if not self.api_account_manager.is_current_account_available():
+                # 尝试切换到下一个账号（正常切换，不强制）
+                if self.api_account_manager.switch_to_next_account(force_switch=False):
+                    self.load_current_api_account()
+                    usage_info = self.api_account_manager.get_usage_info()
+                    self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
+                else:
+                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    return
             
         tracking_list = []
         for widget in self.category_widgets.values():
@@ -5281,7 +6334,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.status_bar.showMessage("正在刷新所有快递...")
         
         self.batch_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
-        self.batch_thread.finished.connect(self.on_batch_refresh_finished)
+        self.batch_thread.finished.connect(self.on_batch_refresh_finished)  # 现在接收两个参数
         self.batch_thread.progress.connect(self.on_batch_progress)
         self.batch_thread.start()
         
@@ -5290,18 +6343,115 @@ class ExpressQueryProGUI(QMainWindow):
         self.global_progress.setValue(value)
         self.status_bar.showMessage(message)
         
-    def on_batch_refresh_finished(self, results: list):
+    def on_batch_refresh_finished(self, success_results: list, failed_items: list):
         """批量刷新完成"""
         self.global_progress.setVisible(False)
         
-        success_count = 0
-        for result in results:
+        success_count = len(success_results)
+        fail_count = len(failed_items)
+        
+        # 处理成功的结果
+        for result in success_results:
             if result.get('success'):
-                # update_express_summary 会记录时效数据
                 self.update_express_summary(result['data'])
-                success_count += 1
+        
+        # 如果有失败的单号，尝试切换账号重试
+        if failed_items and self.api_account_manager:
+            if DEBUG_MODE:
+                print(f"[批量刷新] 有 {fail_count} 个单号刷新失败，尝试切换账号...")
+            
+            # 记录当前账号
+            old_account = self.api_account_manager.current_account
+            old_account_id = old_account.get('id') if old_account else None
+            
+            # 尝试切换到下一个账号（强制切换）
+            if self.api_account_manager.switch_to_next_account(force_switch=True):
+                new_account = self.api_account_manager.current_account
+                new_account_id = new_account.get('id') if new_account else None
                 
-        self.status_bar.showMessage(f"刷新完成：成功 {success_count} 个，失败 {len(results) - success_count} 个", 5000)
+                if old_account_id != new_account_id:
+                    if DEBUG_MODE:
+                        print(f"[批量刷新] 切换到账号: {new_account.get('account_name', '未知')}")
+                    
+                    if not self.load_current_api_account():
+                        self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（切换账号失败）", 5000)
+                        self.load_summary_data()
+                        return
+                    
+                    self.update_api_account_display()
+                    
+                    # 询问是否重试失败的单号
+                    reply = QMessageBox.question(
+                        self, "刷新完成",
+                        f"成功刷新 {success_count} 个快递，{fail_count} 个刷新失败。\n\n"
+                        f"已自动切换到备用账号，是否使用新账号重试失败的单号？",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        # 使用新账号重试失败的单号
+                        self.retry_failed_refresh(failed_items)
+                        return
+                    else:
+                        self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（已切换账号）", 5000)
+                else:
+                    if DEBUG_MODE:
+                        print("[批量刷新] 切换后账号未变化")
+                    self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（无可用备用账号）", 5000)
+            else:
+                if DEBUG_MODE:
+                    print("[批量刷新] switch_to_next_account 返回 False")
+                self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（无备用账号可切换）", 5000)
+        else:
+            self.status_bar.showMessage(f"刷新完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
+        
+        self.load_summary_data()
+
+    def retry_failed_refresh(self, failed_items: list):
+        """重试失败的刷新"""
+        if not failed_items:
+            return
+        
+        self.global_progress.setVisible(True)
+        self.status_bar.showMessage(f"正在使用新账号重试 {len(failed_items)} 个失败的单号...")
+        
+        # 转换为批量刷新需要的格式
+        tracking_list = [
+            {'tracking_number': item['tracking_number'], 'company_code': item.get('company_code', '')}
+            for item in failed_items
+        ]
+        
+        self.batch_retry_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
+        self.batch_retry_thread.finished.connect(self.on_retry_batch_finished)
+        self.batch_retry_thread.progress.connect(self.on_batch_progress)
+        self.batch_retry_thread.start()
+
+    def on_retry_batch_finished(self, success_results: list, failed_items: list):
+        """重试批量刷新完成"""
+        self.global_progress.setVisible(False)
+        
+        success_count = len(success_results)
+        fail_count = len(failed_items)
+        
+        # 处理成功的结果
+        for result in success_results:
+            if result.get('success'):
+                self.update_express_summary(result['data'])
+                # 增加使用次数
+                if self.api_account_manager:
+                    self.api_account_manager.increment_usage()
+        
+        self.update_api_account_display()
+        
+        if fail_count == 0:
+            self.status_bar.showMessage(f"重试成功！所有单号已刷新", 5000)
+            QMessageBox.information(self, "重试完成", f"所有失败的单号都已成功刷新！")
+        else:
+            self.status_bar.showMessage(f"重试完成：成功 {success_count}，仍有 {fail_count} 个失败", 5000)
+            QMessageBox.warning(self, "重试完成", 
+                f"成功刷新 {success_count} 个单号\n"
+                f"仍有 {fail_count} 个单号刷新失败，可能是单号无效或API问题。")
+        
         self.load_summary_data()
         
     def on_category_collapse_changed(self, category_key: str, is_collapsed: bool):
@@ -5408,14 +6558,15 @@ class ExpressQueryProGUI(QMainWindow):
                 self.show_settings()
             return
     
+
         # 检查当前账号是否可用
         if self.api_account_manager:
             # 先检查是否需要重置
             self.api_account_manager.check_and_reset_daily_usage()
             
             if not self.api_account_manager.is_current_account_available():
-                # 尝试切换到下一个账号
-                if self.api_account_manager.switch_to_next_account():
+                # 尝试切换到下一个账号（正常切换，不强制）
+                if self.api_account_manager.switch_to_next_account(force_switch=False):
                     self.load_current_api_account()
                     usage_info = self.api_account_manager.get_usage_info()
                     QMessageBox.information(self, "提示", 
@@ -5430,9 +6581,9 @@ class ExpressQueryProGUI(QMainWindow):
                     info_text += "\n请在明天0点后重试，或添加新的API账号。"
                     QMessageBox.warning(self, "提示", info_text)
                     return
-        
+
         if self.api_account_manager and not self.api_account_manager.is_current_account_available():
-            if self.api_account_manager.switch_to_next_account():
+            if self.api_account_manager.switch_to_next_account(force_switch=False):
                 self.load_current_api_account()
                 QMessageBox.information(self, "提示", "当前账号额度已用完，已自动切换到备用账号")
             else:
@@ -5470,14 +6621,13 @@ class ExpressQueryProGUI(QMainWindow):
         if result.get('success'):
             if self.api_account_manager:
                 self.api_account_manager.increment_usage()
+                self.update_api_account_display()
             
-            # 检查是否是待揽件状态
             is_pending = result.get('is_pending', False)
             data = result['data']
             
             self.process_result(data)
             
-            # 根据状态显示不同的提示信息
             if is_pending:
                 self.status_label.setText("查询成功！快递单号有效，等待揽件中...")
                 self.status_bar.showMessage("单号有效，等待揽件", 3000)
@@ -5489,7 +6639,6 @@ class ExpressQueryProGUI(QMainWindow):
             self.add_to_summary(data)
             self.load_summary_data()
             
-            # 根据状态显示不同的对话框
             if is_pending:
                 QMessageBox.information(self, "添加成功", 
                     "快递单号有效，已添加到汇总。\n\n"
@@ -5504,10 +6653,83 @@ class ExpressQueryProGUI(QMainWindow):
                 if reply == QMessageBox.Yes:
                     self.main_tab_widget.setCurrentIndex(0)
         else:
+            # ========== 查询失败，尝试切换账号重试 ==========
             error_msg = result.get('error', '未知错误')
-            self.status_label.setText(f"查询失败：{error_msg}")
-            self.status_bar.showMessage(f"查询失败：{error_msg}", 5000)
-            QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}")
+            
+            if DEBUG_MODE:
+                print(f"[查询失败]: {error_msg}")
+            
+            if self.api_account_manager:
+                # 增加当前账号的使用次数
+                self.api_account_manager.increment_usage()
+                
+                # 记录当前账号
+                old_account = self.api_account_manager.current_account
+                old_account_id = old_account.get('id') if old_account else None
+                old_account_name = old_account.get('account_name', '未知') if old_account else '无'
+                
+                if DEBUG_MODE:
+                    print(f"[查询失败] 当前账号: {old_account_name}, 尝试切换...")
+                    accounts = self.api_account_manager.get_accounts()
+                    print(f"[查询失败] 共有 {len(accounts)} 个账号")
+                    for i, acc in enumerate(accounts):
+                        print(f"[查询失败]   账号{i+1}: {acc.get('account_name', '未知')} ({acc.get('used_today', 0)}/{acc.get('daily_limit', 100)})")
+                
+                # 尝试切换到下一个账号（强制切换）
+                if self.api_account_manager.switch_to_next_account(force_switch=True):
+                    new_account = self.api_account_manager.current_account
+                    new_account_id = new_account.get('id') if new_account else None
+                    new_account_name = new_account.get('account_name', '未知') if new_account else '无'
+                    
+                    if old_account_id != new_account_id:
+                        if DEBUG_MODE:
+                            print(f"[查询失败] 切换到账号: {new_account_name}")
+                        
+                        if not self.load_current_api_account():
+                            self.status_label.setText(f"查询失败：{error_msg}（切换账号失败）")
+                            self.status_bar.showMessage(f"查询失败：{error_msg}（切换账号失败）", 5000)
+                            QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n切换账号失败，请检查账号配置。")
+                            return
+                        
+                        if DEBUG_MODE:
+                            print(f"[账号切换后] customer: {self.customer[:10] if self.customer else 'empty'}, key: {self.key[:10] if self.key else 'empty'}")
+                        
+                        self.update_api_account_display()
+                        usage_info = self.api_account_manager.get_usage_info()
+                        
+                        reply = QMessageBox.question(
+                            self, "自动切换账号",
+                            f"查询失败：{error_msg}\n\n"
+                            f"已自动切换到备用账号：{new_account_name}\n"
+                            f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}\n\n"
+                            f"是否使用新账号重新查询？",
+                            QMessageBox.Yes | QMessageBox.No
+                        )
+                        
+                        if reply == QMessageBox.Yes:
+                            QTimer.singleShot(100, self.query_express)
+                            return
+                        else:
+                            self.status_label.setText(f"查询失败：{error_msg}（已切换账号）")
+                            self.status_bar.showMessage(f"查询失败：{error_msg}（已切换账号）", 5000)
+                    else:
+                        if DEBUG_MODE:
+                            print(f"[查询失败] 切换后账号未变化: {new_account_name}")
+                        self.status_label.setText(f"查询失败：{error_msg}（无可用备用账号）")
+                        self.status_bar.showMessage(f"查询失败：{error_msg}（无可用备用账号）", 5000)
+                        QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n没有可用的备用账号。")
+                else:
+                    if DEBUG_MODE:
+                        print("[查询失败] switch_to_next_account 返回 False")
+                    self.status_label.setText(f"查询失败：{error_msg}（无备用账号）")
+                    self.status_bar.showMessage(f"查询失败：{error_msg}（无备用账号）", 5000)
+                    QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n请添加备用API账号。")
+            else:
+                if DEBUG_MODE:
+                    print("[查询失败] api_account_manager 为 None")
+                self.status_label.setText(f"查询失败：{error_msg}")
+                self.status_bar.showMessage(f"查询失败：{error_msg}", 5000)
+                QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}")
             
     def save_query_to_history(self, data: dict, quota_info: dict):
         """保存查询到历史"""
@@ -5987,6 +7209,189 @@ class ExpressQueryProGUI(QMainWindow):
             
         event.accept()
 
+    def get_company_code_by_number(self, tracking_num: str) -> Tuple[str, str]:
+        """根据单号格式自动识别快递公司"""
+        tracking_num = tracking_num.strip().upper()
+        
+        # 快递单号识别规则（完整版）
+        rules = [
+            # ========== 顺丰速运 ==========
+            (lambda n: n.startswith('SF') and len(n) >= 12, 'shunfeng', '顺丰速运'),
+            (lambda n: len(n) == 12 and n.isdigit(), 'shunfeng', '顺丰速运'),
+            (lambda n: n.startswith('SF') and n[2:].isdigit() and len(n) == 15, 'shunfeng', '顺丰速运'),
+            
+            # ========== 圆通速递 ==========
+            (lambda n: n.startswith('YT') and len(n) >= 10, 'yuantong', '圆通速递'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '23456', 'yuantong', '圆通速递'),
+            
+            # ========== 中通快递 ==========
+            (lambda n: n.startswith('ZT') and len(n) >= 10, 'zhongtong', '中通快递'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '78', 'zhongtong', '中通快递'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('7'), 'zhongtong', '中通快递'),
+            
+            # ========== 韵达快递 ==========
+            (lambda n: n.startswith('YD') and len(n) >= 10, 'yunda', '韵达快递'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[0] in '145', 'yunda', '韵达快递'),
+            
+            # ========== 申通快递 ==========
+            (lambda n: n.startswith('ST') and len(n) >= 10, 'shentong', '申通快递'),
+            (lambda n: len(n) == 12 and n.isdigit() and n[0] in '378', 'shentong', '申通快递'),
+            (lambda n: n.startswith('STO') and len(n) >= 10, 'shentong', '申通快递'),
+            
+            # ========== 京东物流 ==========
+            (lambda n: n.startswith('JD'), 'jd', '京东物流'),
+            (lambda n: n.startswith('JDV'), 'jd', '京东物流'),
+            (lambda n: n.startswith('JDE'), 'jd', '京东物流'),
+            (lambda n: n.startswith('JDX'), 'jd', '京东物流'),
+            (lambda n: 10 <= len(n) <= 15 and n.isdigit(), 'jd', '京东物流'),
+            
+            # ========== EMS ==========
+            (lambda n: n.startswith('EMS'), 'ems', 'EMS'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[:2] in ['98', '99', '10', '11', '12', '13', '14'], 'ems', 'EMS'),
+            (lambda n: n.startswith('EP') and len(n) >= 10, 'ems', 'EMS'),
+            
+            # ========== 中国邮政 ==========
+            (lambda n: n.startswith('PA') and len(n) >= 10, 'youzhengguo', '中国邮政'),
+            (lambda n: n.startswith('KA') and len(n) >= 10, 'youzhengguo', '中国邮政'),
+            (lambda n: n.startswith('SA') and len(n) >= 10, 'youzhengguo', '中国邮政'),
+            (lambda n: n.startswith('XA') and len(n) >= 10, 'youzhengguo', '中国邮政'),
+            (lambda n: len(n) == 13 and n.isdigit() and n.startswith('9'), 'youzhengguo', '中国邮政'),
+            
+            # ========== 极兔速递 ==========
+            (lambda n: n.startswith('JT') and len(n) >= 10, 'jtexpress', '极兔速递'),
+            (lambda n: n.startswith('J&T') and len(n) >= 10, 'jtexpress', '极兔速递'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit(), 'jtexpress', '极兔速递'),
+            
+            # ========== 百世快递 ==========
+            (lambda n: n.startswith('B') and len(n) >= 10, 'huitongkuaidi', '百世快递'),
+            (lambda n: n.startswith('H') and len(n) >= 10, 'huitongkuaidi', '百世快递'),
+            (lambda n: n.startswith('HT') and len(n) >= 10, 'huitongkuaidi', '百世快递'),
+            (lambda n: n.startswith('BEST') and len(n) >= 10, 'huitongkuaidi', '百世快递'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('0'), 'huitongkuaidi', '百世快递'),
+            
+            # ========== 德邦快递 ==========
+            (lambda n: n.startswith('DPK') and len(n) >= 10, 'debangwuliu', '德邦快递'),
+            (lambda n: n.startswith('DP') and len(n) >= 10, 'debangwuliu', '德邦快递'),
+            (lambda n: len(n) >= 8 and len(n) <= 12 and n.isdigit() and n[0] in '56789', 'debangwuliu', '德邦快递'),
+            
+            # ========== 天天快递 ==========
+            (lambda n: n.startswith('TT') and len(n) >= 10, 'tiantian', '天天快递'),
+            (lambda n: 12 <= len(n) <= 14 and n.isdigit(), 'tiantian', '天天快递'),
+            
+            # ========== 宅急送 ==========
+            (lambda n: n.startswith('ZJS') and len(n) >= 10, 'zhaijisong', '宅急送'),
+            (lambda n: 10 <= len(n) <= 12 and n.isdigit(), 'zhaijisong', '宅急送'),
+            
+            # ========== 优速快递 ==========
+            (lambda n: n.startswith('UC') and len(n) >= 10, 'youshuwuliu', '优速快递'),
+            (lambda n: n.startswith('YS') and len(n) >= 10, 'youshuwuliu', '优速快递'),
+            
+            # ========== 跨越速运 ==========
+            (lambda n: n.startswith('KY') and len(n) >= 10, 'kuayue', '跨越速运'),
+            (lambda n: n.startswith('KYE') and len(n) >= 10, 'kuayue', '跨越速运'),
+            
+            # ========== 速尔快递 ==========
+            (lambda n: n.startswith('SR') and len(n) >= 10, 'suer', '速尔快递'),
+            
+            # ========== 联邦快递 ==========
+            (lambda n: n.startswith('FX') and len(n) >= 10, 'fedex', '联邦快递'),
+            (lambda n: len(n) == 12 and n.isdigit(), 'fedex', '联邦快递'),
+            
+            # ========== DHL ==========
+            (lambda n: len(n) == 10 and n.isdigit(), 'dhl', 'DHL'),
+            (lambda n: n.isdigit() and len(n) >= 10 and len(n) <= 14, 'dhl', 'DHL'),
+            
+            # ========== UPS ==========
+            (lambda n: n.startswith('1Z') and len(n) >= 18, 'ups', 'UPS'),
+            (lambda n: n.startswith('1Z') and len(n) == 18, 'ups', 'UPS'),
+            (lambda n: n.startswith('K') and len(n) == 11, 'ups', 'UPS'),
+            
+            # ========== TNT ==========
+            (lambda n: len(n) == 9 and n.isdigit(), 'tnt', 'TNT'),
+            (lambda n: n.isdigit() and len(n) >= 9 and len(n) <= 15, 'tnt', 'TNT'),
+            
+            # ========== USPS ==========
+            (lambda n: len(n) == 22 and n.isdigit(), 'usps', 'USPS'),
+            (lambda n: len(n) == 20 and n.isdigit(), 'usps', 'USPS'),
+            (lambda n: len(n) == 26 and n.isdigit(), 'usps', 'USPS'),
+            (lambda n: n.startswith('EC') and len(n) >= 13, 'usps', 'USPS'),
+            (lambda n: n.startswith('CP') and len(n) >= 13, 'usps', 'USPS'),
+            (lambda n: n.startswith('92') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('93') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('94') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('95') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('96') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('97') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('98') and len(n) >= 22, 'usps', 'USPS'),
+            (lambda n: n.startswith('99') and len(n) >= 22, 'usps', 'USPS'),
+            
+            # ========== 亚马逊物流 ==========
+            (lambda n: n.startswith('TBA') and len(n) >= 10, 'amazon', '亚马逊物流'),
+            (lambda n: n.startswith('AMZN') and len(n) >= 10, 'amazon', '亚马逊物流'),
+            
+            # ========== 菜鸟裹裹 ==========
+            (lambda n: n.startswith('CN') and len(n) >= 10, 'cainiao', '菜鸟裹裹'),
+            
+            # ========== 丹鸟物流 ==========
+            (lambda n: n.startswith('DN') and len(n) >= 10, 'danniao', '丹鸟物流'),
+            
+            # ========== 安能物流 ==========
+            (lambda n: n.startswith('AN') and len(n) >= 10, 'annengwuliu', '安能物流'),
+            (lambda n: n.startswith('ANE') and len(n) >= 10, 'annengwuliu', '安能物流'),
+            
+            # ========== 壹米滴答 ==========
+            (lambda n: n.startswith('YM') and len(n) >= 10, 'yimidida', '壹米滴答'),
+            (lambda n: n.startswith('YMD') and len(n) >= 10, 'yimidida', '壹米滴答'),
+            
+            # ========== 全峰快递 ==========
+            (lambda n: n.startswith('QF') and len(n) >= 10, 'quanfengkuaidi', '全峰快递'),
+            
+            # ========== 国通快递 ==========
+            (lambda n: n.startswith('GT') and len(n) >= 10, 'guotongkuaidi', '国通快递'),
+            
+            # ========== 快捷快递 ==========
+            (lambda n: n.startswith('KJ') and len(n) >= 10, 'kuaijiesudi', '快捷快递'),
+            
+            # ========== 如风达 ==========
+            (lambda n: n.startswith('RF') and len(n) >= 10, 'rufengda', '如风达'),
+            
+            # ========== 信丰物流 ==========
+            (lambda n: n.startswith('XF') and len(n) >= 10, 'xinfengwuliu', '信丰物流'),
+        ]
+        
+        for check, code, name in rules:
+            try:
+                if check(tracking_num):
+                    return code, name
+            except:
+                continue
+                
+        return "", ""
+
+    def update_api_account_display(self):
+        """更新API账号显示"""
+        if hasattr(self, 'api_account_label') and self.api_account_manager:
+            account = self.api_account_manager.get_current_account()
+            if account:
+                account_name = account.get('account_name', '未知')
+                used = account.get('used_today', 0)
+                limit = account.get('daily_limit', 100)
+                
+                # 显示更详细的信息
+                self.api_account_label.setText(
+                    f" | 🔑 API账号: {account_name} ({used}/{limit})"
+                )
+                
+                # 同时更新状态栏提示（使用 statusBar() 方法获取状态栏）
+                status_bar = self.statusBar()
+                if status_bar:
+                    status_bar.showMessage(f"当前使用API账号: {account_name}", 2000)
+            else:
+                self.api_account_label.setText(" | 🔑 API账号: 无")
+                status_bar = self.statusBar()
+                if status_bar:
+                    status_bar.showMessage("警告：未配置API账号，无法查询快递", 3000)
+
 class SettingsDialogPro(QDialog):
     """设置对话框"""
     
@@ -6122,8 +7527,11 @@ class SettingsDialogPro(QDialog):
             dialog = ApiAccountDialog(self.parent.current_user_db, self)
             if dialog.exec() == QDialog.Accepted:
                 if self.parent.api_account_manager:
+                    # ========== 确保刷新 ==========
                     self.parent.api_account_manager.load_accounts()
                     self.parent.load_current_api_account()
+                    self.parent.update_api_account_display()
+                    # ============================
         else:
             QMessageBox.warning(self, "提示", "数据库未连接")
             
@@ -6143,6 +7551,937 @@ class SettingsDialogPro(QDialog):
         DEBUG_MODE = self.debug_check.isChecked()
         
         QMessageBox.information(self, "成功", "设置已保存")
+
+class BatchImportDialog(QDialog):
+    """批量导入快递单号对话框"""
+    
+    def __init__(self, company_codes: dict, parent=None):
+        super().__init__(parent)
+        self.company_codes = company_codes
+        self.imported_numbers = []
+        self.init_ui()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+        
+    def init_ui(self):
+        self.setWindowTitle("批量导入快递单号")
+        self.setMinimumSize(700, 600)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # 导入方式选择
+        method_group = QGroupBox("导入方式")
+        method_layout = QVBoxLayout()
+        
+        self.method_combo = QComboBox()
+        self.method_combo.addItems(["从文件导入", "粘贴多行文本", "手动输入（每行一个）"])
+        self.method_combo.currentIndexChanged.connect(self.on_method_changed)
+        method_layout.addWidget(self.method_combo)
+        
+        method_group.setLayout(method_layout)
+        layout.addWidget(method_group)
+        
+        # 文件导入区域
+        self.file_widget = QWidget()
+        file_layout = QVBoxLayout(self.file_widget)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        file_select_layout = QHBoxLayout()
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setPlaceholderText("选择包含快递单号的文件...")
+        self.file_path_edit.setReadOnly(True)
+        file_select_layout.addWidget(self.file_path_edit)
+        
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self.browse_file)
+        file_select_layout.addWidget(browse_btn)
+        
+        file_layout.addLayout(file_select_layout)
+        
+        file_tip = QLabel("支持格式：TXT、CSV、文本文件，每行一个快递单号")
+        file_tip.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px;")
+        file_layout.addWidget(file_tip)
+        
+        layout.addWidget(self.file_widget)
+        
+        # 文本输入区域
+        self.text_widget = QWidget()
+        self.text_widget.setVisible(False)
+        text_layout = QVBoxLayout(self.text_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        
+        text_label = QLabel("请输入快递单号（每行一个，或使用分隔符分隔）：")
+        text_layout.addWidget(text_label)
+        
+        # 分隔符设置
+        separator_layout = QHBoxLayout()
+        separator_layout.addWidget(QLabel("分隔符："))
+        
+        self.separator_combo = QComboBox()
+        self.separator_combo.addItems(["换行（默认）", "逗号 ,", "空格", "分号 ;", "制表符", "自定义..."])
+        self.separator_combo.currentIndexChanged.connect(self.on_separator_changed)
+        separator_layout.addWidget(self.separator_combo)
+        
+        self.custom_separator_edit = QLineEdit()
+        self.custom_separator_edit.setPlaceholderText("输入自定义分隔符")
+        self.custom_separator_edit.setMaximumWidth(100)
+        self.custom_separator_edit.setVisible(False)
+        separator_layout.addWidget(self.custom_separator_edit)
+        
+        separator_layout.addStretch()
+        text_layout.addLayout(separator_layout)
+        
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("例如：\nYT1234567890\nSF1234567890\nJD1234567890\n\n或使用逗号分隔：\nYT1234567890,SF1234567890,JD1234567890")
+        self.text_edit.setMinimumHeight(200)
+        text_layout.addWidget(self.text_edit)
+        
+        # 预览按钮
+        preview_btn = QPushButton("预览解析结果")
+        preview_btn.clicked.connect(self.preview_numbers)
+        text_layout.addWidget(preview_btn)
+        
+        layout.addWidget(self.text_widget)
+        
+        # 快递公司选择
+        company_group = QGroupBox("快递公司设置")
+        company_layout = QHBoxLayout()
+        
+        company_layout.addWidget(QLabel("默认快递公司："))
+        
+        self.company_combo = QComboBox()
+        self.company_combo.addItems(list(self.company_codes.keys()))
+        self.company_combo.setCurrentText("自动识别")
+        company_layout.addWidget(self.company_combo)
+        
+        company_layout.addStretch()
+        
+        self.auto_detect_check = QCheckBox("启用自动识别（单号格式识别）")
+        self.auto_detect_check.setChecked(True)
+        self.auto_detect_check.setToolTip("根据单号格式自动识别快递公司，仅对支持的单号格式有效")
+        company_layout.addWidget(self.auto_detect_check)
+        
+        company_group.setLayout(company_layout)
+        layout.addWidget(company_group)
+        
+        # 预览区域
+        preview_group = QGroupBox("待导入单号预览")
+        preview_layout = QVBoxLayout()
+        
+        self.preview_table = QTableWidget()
+        self.preview_table.setColumnCount(4)
+        self.preview_table.setHorizontalHeaderLabels(["序号", "快递单号", "快递公司", "状态"])
+        self.preview_table.horizontalHeader().setStretchLastSection(True)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        preview_layout.addWidget(self.preview_table)
+        
+        stats_layout = QHBoxLayout()
+        self.stats_label = QLabel("共 0 个单号")
+        stats_layout.addWidget(self.stats_label)
+        
+        self.valid_count_label = QLabel("有效：0")
+        stats_layout.addWidget(self.valid_count_label)
+        
+        self.duplicate_count_label = QLabel("重复：0")
+        stats_layout.addWidget(self.duplicate_count_label)
+        
+        stats_layout.addStretch()
+        preview_layout.addLayout(stats_layout)
+        
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        self.parse_btn = QPushButton("解析单号")
+        self.parse_btn.clicked.connect(self.parse_numbers)
+        btn_layout.addWidget(self.parse_btn)
+        
+        self.clear_btn = QPushButton("清空")
+        self.clear_btn.clicked.connect(self.clear_all)
+        btn_layout.addWidget(self.clear_btn)
+        
+        btn_layout.addStretch()
+        
+        self.import_btn = QPushButton("开始导入")
+        self.import_btn.clicked.connect(self.accept)
+        self.import_btn.setEnabled(False)
+        self.import_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        btn_layout.addWidget(self.import_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+    def on_method_changed(self, index: int):
+        """切换导入方式"""
+        self.file_widget.setVisible(index == 0)
+        self.text_widget.setVisible(index != 0)
+        
+        # 更新分隔符选项
+        if index == 1:  # 粘贴多行文本
+            self.separator_combo.setCurrentText("换行（默认）")
+        elif index == 2:  # 手动输入
+            self.separator_combo.setCurrentText("换行（默认）")
+            
+    def on_separator_changed(self, index: int):
+        """分隔符改变"""
+        self.custom_separator_edit.setVisible(index == 5)
+        
+    def browse_file(self):
+        """浏览文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择快递单号文件", "",
+            "文本文件 (*.txt *.csv *.log);;所有文件 (*.*)"
+        )
+        
+        if file_path:
+            self.file_path_edit.setText(file_path)
+            self.load_file_content(file_path)
+            
+    def load_file_content(self, file_path: str):
+        """加载文件内容"""
+        try:
+            # 尝试多种编码
+            encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'gb18030']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        content = f.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+                    
+            if content is None:
+                QMessageBox.warning(self, "错误", "无法识别文件编码，请确保文件为文本格式")
+                return
+                
+            # 切换到文本输入模式显示内容
+            self.method_combo.setCurrentIndex(1)
+            self.text_edit.setText(content)
+            
+            # 自动解析 - 增加延迟确保UI更新
+            QTimer.singleShot(200, self.parse_numbers)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"读取文件失败：{e}")
+            
+    def get_separator(self) -> Optional[str]:
+        """获取当前分隔符"""
+        index = self.separator_combo.currentIndex()
+        separators = {
+            0: '\n',      # 换行
+            1: ',',       # 逗号
+            2: ' ',       # 空格
+            3: ';',       # 分号
+            4: '\t',      # 制表符
+            5: self.custom_separator_edit.text()  # 自定义
+        }
+        return separators.get(index)
+        
+    def detect_company_by_number(self, tracking_num: str) -> str:
+        """根据单号格式自动识别快递公司"""
+        tracking_num = tracking_num.strip().upper()
+        
+        # 快递单号识别规则（完整版）
+        rules = [
+            # ========== 顺丰速运 ==========
+            # SF开头 + 12位数字，或纯12位数字
+            (lambda n: n.startswith('SF') and len(n) >= 12, 'shunfeng'),
+            (lambda n: len(n) == 12 and n.isdigit(), 'shunfeng'),
+            (lambda n: n.startswith('SF') and n[2:].isdigit() and len(n) == 15, 'shunfeng'),
+            
+            # ========== 圆通速递 ==========
+            # YT开头，或10-18位纯数字（常见以2、3、4、5、6开头）
+            (lambda n: n.startswith('YT') and len(n) >= 10, 'yuantong'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '23456', 'yuantong'),
+            (lambda n: n.startswith('YT') and n[2:].isdigit(), 'yuantong'),
+            
+            # ========== 中通快递 ==========
+            # ZT开头，或10-18位数字（常见以7、8开头）
+            (lambda n: n.startswith('ZT') and len(n) >= 10, 'zhongtong'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '78', 'zhongtong'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('7'), 'zhongtong'),
+            (lambda n: len(n) == 14 and n.isdigit() and n.startswith('8'), 'zhongtong'),
+            
+            # ========== 韵达快递 ==========
+            # YD开头，或13位数字（常见以1、4、5开头）
+            (lambda n: n.startswith('YD') and len(n) >= 10, 'yunda'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[0] in '145', 'yunda'),
+            (lambda n: n.startswith('YD') and n[2:].isdigit(), 'yunda'),
+            (lambda n: len(n) == 15 and n.isdigit() and n.startswith('5'), 'yunda'),
+            
+            # ========== 申通快递 ==========
+            # ST开头，或12位数字（常见以3、7、8开头）
+            (lambda n: n.startswith('ST') and len(n) >= 10, 'shentong'),
+            (lambda n: len(n) == 12 and n.isdigit() and n[0] in '378', 'shentong'),
+            (lambda n: n.startswith('STO') and len(n) >= 10, 'shentong'),
+            (lambda n: len(n) == 13 and n.isdigit() and n.startswith('77'), 'shentong'),
+            
+            # ========== 京东物流 ==========
+            # JD开头，或JDV/JDE开头，或10-15位数字
+            (lambda n: n.startswith('JD'), 'jd'),
+            (lambda n: n.startswith('JDV'), 'jd'),
+            (lambda n: n.startswith('JDE'), 'jd'),
+            (lambda n: n.startswith('JDX'), 'jd'),
+            (lambda n: n.startswith('JD') and len(n) >= 10, 'jd'),
+            (lambda n: 10 <= len(n) <= 15 and n.isdigit() and n[0] in '0123456789', 'jd'),
+            
+            # ========== EMS/中国邮政 ==========
+            # EMS开头，或13位数字（常见以9、10、11、12开头）
+            (lambda n: n.startswith('EMS'), 'ems'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[:2] in ['98', '99', '10', '11', '12', '13', '14'], 'ems'),
+            (lambda n: n.startswith('EP') and len(n) >= 10, 'ems'),
+            (lambda n: n.startswith('EL') and len(n) >= 10, 'ems'),
+            
+            # ========== 中国邮政（国内） ==========
+            (lambda n: n.startswith('PA') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('KA') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('SA') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XA') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XB') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XC') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XD') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XE') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XF') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XG') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('XH') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('PH') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('PK') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('AA') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('AB') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('AC') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('AD') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: n.startswith('AE') and len(n) >= 10, 'youzhengguo'),
+            (lambda n: len(n) == 13 and n.isdigit() and n.startswith('9'), 'youzhengguo'),
+            
+            # ========== 极兔速递 ==========
+            # JT开头，或10-15位数字
+            (lambda n: n.startswith('JT') and len(n) >= 10, 'jtexpress'),
+            (lambda n: n.startswith('J&T') and len(n) >= 10, 'jtexpress'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '0123456789', 'jtexpress'),
+            
+            # ========== 百世快递 ==========
+            # 以B、H开头，或百世专用格式
+            (lambda n: n.startswith('B') and len(n) >= 10, 'huitongkuaidi'),
+            (lambda n: n.startswith('H') and len(n) >= 10, 'huitongkuaidi'),
+            (lambda n: n.startswith('HT') and len(n) >= 10, 'huitongkuaidi'),
+            (lambda n: n.startswith('BEST') and len(n) >= 10, 'huitongkuaidi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('0'), 'huitongkuaidi'),
+            (lambda n: len(n) == 14 and n.isdigit() and n.startswith('3'), 'huitongkuaidi'),
+            
+            # ========== 德邦快递 ==========
+            # DPK开头，或以DP开头
+            (lambda n: n.startswith('DPK') and len(n) >= 10, 'debangwuliu'),
+            (lambda n: n.startswith('DP') and len(n) >= 10, 'debangwuliu'),
+            (lambda n: n.startswith('DEBANG') and len(n) >= 10, 'debangwuliu'),
+            (lambda n: len(n) >= 8 and len(n) <= 12 and n.isdigit() and n[0] in '56789', 'debangwuliu'),
+            
+            # ========== 天天快递 ==========
+            # TT开头，或12-14位数字
+            (lambda n: n.startswith('TT') and len(n) >= 10, 'tiantian'),
+            (lambda n: n.startswith('TTK') and len(n) >= 10, 'tiantian'),
+            (lambda n: 12 <= len(n) <= 14 and n.isdigit() and n[0] in '0123456789', 'tiantian'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('6'), 'tiantian'),
+            
+            # ========== 宅急送 ==========
+            (lambda n: n.startswith('ZJS') and len(n) >= 10, 'zhaijisong'),
+            (lambda n: 10 <= len(n) <= 12 and n.isdigit() and n[0] in '0123456789', 'zhaijisong'),
+            
+            # ========== 优速快递 ==========
+            (lambda n: n.startswith('UC') and len(n) >= 10, 'youshuwuliu'),
+            (lambda n: n.startswith('YS') and len(n) >= 10, 'youshuwuliu'),
+            (lambda n: 12 <= len(n) <= 15 and n.isdigit() and n.startswith('9'), 'youshuwuliu'),
+            
+            # ========== 跨越速运 ==========
+            (lambda n: n.startswith('KY') and len(n) >= 10, 'kuayue'),
+            (lambda n: n.startswith('KYE') and len(n) >= 10, 'kuayue'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('8'), 'kuayue'),
+            
+            # ========== 速尔快递 ==========
+            (lambda n: n.startswith('SR') and len(n) >= 10, 'suer'),
+            (lambda n: n.startswith('SURE') and len(n) >= 10, 'suer'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('4'), 'suer'),
+            
+            # ========== 全峰快递 ==========
+            (lambda n: n.startswith('QF') and len(n) >= 10, 'quanfengkuaidi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('2'), 'quanfengkuaidi'),
+            
+            # ========== 国通快递 ==========
+            (lambda n: n.startswith('GT') and len(n) >= 10, 'guotongkuaidi'),
+            (lambda n: len(n) == 10 and n.isdigit() and n.startswith('3'), 'guotongkuaidi'),
+            
+            # ========== 快捷快递 ==========
+            (lambda n: n.startswith('KJ') and len(n) >= 10, 'kuaijiesudi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('1'), 'kuaijiesudi'),
+            
+            # ========== 龙邦快递 ==========
+            (lambda n: n.startswith('LB') and len(n) >= 10, 'longbanwuliu'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('8'), 'longbanwuliu'),
+            
+            # ========== 信丰物流 ==========
+            (lambda n: n.startswith('XF') and len(n) >= 10, 'xinfengwuliu'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('5'), 'xinfengwuliu'),
+            
+            # ========== 增益快递 ==========
+            (lambda n: n.startswith('ZY') and len(n) >= 10, 'zengyikuaidi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('7'), 'zengyikuaidi'),
+            
+            # ========== 联昊通 ==========
+            (lambda n: n.startswith('LH') and len(n) >= 10, 'lianhaowuliu'),
+            (lambda n: n.startswith('LHT') and len(n) >= 10, 'lianhaowuliu'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('9'), 'lianhaowuliu'),
+            
+            # ========== 全一快递 ==========
+            (lambda n: n.startswith('QY') and len(n) >= 10, 'quanyikuaidi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('0'), 'quanyikuaidi'),
+            
+            # ========== 如风达 ==========
+            (lambda n: n.startswith('RF') and len(n) >= 10, 'rufengda'),
+            (lambda n: n.startswith('RFD') and len(n) >= 10, 'rufengda'),
+            (lambda n: len(n) == 15 and n.isdigit(), 'rufengda'),
+            
+            # ========== 联邦快递 ==========
+            (lambda n: n.startswith('FX') and len(n) >= 10, 'fedex'),
+            (lambda n: len(n) == 12 and n.isdigit() and n[0] in '0123456789', 'fedex'),
+            (lambda n: any(c.isalpha() for c in n) and len(n) == 12, 'fedex'),
+            
+            # ========== DHL ==========
+            (lambda n: len(n) == 10 and n.isdigit(), 'dhl'),
+            (lambda n: len(n) == 12 and n.isdigit(), 'dhl'),
+            (lambda n: n.isdigit() and len(n) >= 10 and len(n) <= 14, 'dhl'),
+            
+            # ========== UPS ==========
+            (lambda n: n.startswith('1Z') and len(n) >= 18, 'ups'),
+            (lambda n: n.startswith('1Z') and len(n) == 18, 'ups'),
+            (lambda n: n.startswith('K') and len(n) == 11, 'ups'),
+            (lambda n: len(n) == 9 and n.isdigit(), 'ups'),
+            (lambda n: len(n) == 12 and n.isalpha(), 'ups'),
+            
+            # ========== TNT ==========
+            (lambda n: len(n) == 9 and n.isdigit(), 'tnt'),
+            (lambda n: len(n) == 13 and n.isdigit(), 'tnt'),
+            (lambda n: n.isdigit() and len(n) >= 9 and len(n) <= 15, 'tnt'),
+            
+            # ========== USPS ==========
+            (lambda n: len(n) == 22 and n.isdigit(), 'usps'),
+            (lambda n: len(n) == 20 and n.isdigit(), 'usps'),
+            (lambda n: len(n) == 26 and n.isdigit(), 'usps'),
+            (lambda n: len(n) == 30 and n.isdigit(), 'usps'),
+            (lambda n: n.startswith('EC') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('CP') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('RA') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LC') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LJ') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LK') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LM') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LN') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LP') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LQ') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LR') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LS') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LT') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LU') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LV') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LW') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LX') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LY') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('LZ') and len(n) >= 13, 'usps'),
+            (lambda n: n.startswith('UA') and len(n) >= 9, 'usps'),
+            (lambda n: n.startswith('92') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('93') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('94') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('95') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('96') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('97') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('98') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('99') and len(n) >= 22, 'usps'),
+            (lambda n: n.startswith('82') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('83') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('84') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('85') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('86') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('87') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('88') and len(n) >= 10, 'usps'),
+            (lambda n: n.startswith('89') and len(n) >= 10, 'usps'),
+            
+            # ========== 亚马逊物流 ==========
+            (lambda n: n.startswith('TBA') and len(n) >= 10, 'amazon'),
+            (lambda n: n.startswith('TBC') and len(n) >= 10, 'amazon'),
+            (lambda n: n.startswith('TBM') and len(n) >= 10, 'amazon'),
+            (lambda n: n.startswith('AMZ') and len(n) >= 10, 'amazon'),
+            (lambda n: n.startswith('AMZN') and len(n) >= 10, 'amazon'),
+            (lambda n: len(n) == 14 and n.isdigit() and n.startswith('0'), 'amazon'),
+            
+            # ========== 菜鸟裹裹 ==========
+            (lambda n: n.startswith('CN') and len(n) >= 10, 'cainiao'),
+            (lambda n: n.startswith('CAINIAO') and len(n) >= 10, 'cainiao'),
+            (lambda n: len(n) == 16 and n.isdigit() and n.startswith('9'), 'cainiao'),
+            
+            # ========== 丹鸟物流 ==========
+            (lambda n: n.startswith('DN') and len(n) >= 10, 'danniao'),
+            (lambda n: len(n) == 15 and n.isdigit() and n.startswith('6'), 'danniao'),
+            
+            # ========== 安能物流 ==========
+            (lambda n: n.startswith('AN') and len(n) >= 10, 'annengwuliu'),
+            (lambda n: n.startswith('ANE') and len(n) >= 10, 'annengwuliu'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('2'), 'annengwuliu'),
+            (lambda n: len(n) == 13 and n.isdigit() and n.startswith('3'), 'annengwuliu'),
+            
+            # ========== 壹米滴答 ==========
+            (lambda n: n.startswith('YM') and len(n) >= 10, 'yimidida'),
+            (lambda n: n.startswith('YMD') and len(n) >= 10, 'yimidida'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('4'), 'yimidida'),
+            
+            # ========== 德坤物流 ==========
+            (lambda n: n.startswith('DK') and len(n) >= 10, 'dekunwuliu'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('5'), 'dekunwuliu'),
+            
+            # ========== 中铁快运 ==========
+            (lambda n: n.startswith('ZT') and len(n) >= 10, 'zhongtiewuliu'),
+            (lambda n: n.startswith('CRE') and len(n) >= 10, 'zhongtiewuliu'),
+            (lambda n: len(n) == 10 and n.isdigit() and n.startswith('K'), 'zhongtiewuliu'),
+            
+            # ========== 民航快递 ==========
+            (lambda n: n.startswith('CA') and len(n) >= 10, 'minhangkuaidi'),
+            (lambda n: len(n) == 12 and n.isdigit() and n.startswith('6'), 'minhangkuaidi'),
+            
+            # ========== 运通中港 ==========
+            (lambda n: n.startswith('YT') and 'HK' in n, 'yuntongkuaidi'),
+            
+            # ========== 泛捷国际 ==========
+            (lambda n: n.startswith('FJ') and len(n) >= 10, 'fanjiekuaidi'),
+            
+            # ========== 新顺丰（国际） ==========
+            (lambda n: n.startswith('XSF') and len(n) >= 10, 'xinshunfeng'),
+        ]
+        
+        for check, code in rules:
+            try:
+                if check(tracking_num):
+                    return code
+            except:
+                continue
+                
+        return ""
+        
+    def get_company_name_by_code(self, code: str) -> str:
+        """根据代码获取公司名称"""
+        for name, c in self.company_codes.items():
+            if c == code:
+                return name
+        return "未知"
+        
+    def parse_numbers(self):
+        """解析单号 - 支持快递公司名称+单号的混合格式"""
+        method = self.method_combo.currentIndex()
+        
+        if method == 0:  # 文件导入
+            file_path = self.file_path_edit.text().strip()
+            if not file_path:
+                QMessageBox.warning(self, "提示", "请先选择文件")
+                return
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "提示", "文件不存在")
+                return
+            self.load_file_content(file_path)
+            return
+            
+        # 文本导入
+        content = self.text_edit.toPlainText().strip()
+        if not content:
+            QMessageBox.warning(self, "提示", "请输入快递单号")
+            return
+            
+        separator = self.get_separator()
+        if not separator:
+            QMessageBox.warning(self, "提示", "请输入自定义分隔符")
+            return
+            
+        # 分割内容
+        if separator == '\n':
+            # 按行分割
+            lines = content.split('\n')
+            raw_items = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                raw_items.append(line)
+        else:
+            # 按指定分隔符分割
+            raw_items = [n.strip() for n in content.split(separator) if n.strip()]
+        
+        # 解析每行内容，提取单号和预识别的公司
+        numbers = []
+        pre_recognized_companies = {}  # 单号 -> 预识别的公司代码
+        
+        # 常见快递公司名称关键词映射（只保留中文关键词，避免误判）
+        company_keywords = {
+            'shunfeng': ['顺丰', '顺丰速运'],
+            'yuantong': ['圆通', '圆通速递'],
+            'zhongtong': ['中通', '中通快递'],
+            'yunda': ['韵达', '韵达快递'],
+            'shentong': ['申通', '申通快递'],
+            'jd': ['京东', '京东物流'],
+            'youzhengguo': ['邮政', '中国邮政', '邮政快递'],
+            'ems': ['EMS', '邮政速递'],
+            'jtexpress': ['极兔', '极兔速递'],
+            'huitongkuaidi': ['百世', '百世快递'],
+            'debangwuliu': ['德邦', '德邦快递'],
+            'tiantian': ['天天', '天天快递'],
+            'zhaijisong': ['宅急送'],
+            'youshuwuliu': ['优速', '优速快递'],
+            'kuayue': ['跨越', '跨越速运'],
+            'suer': ['速尔', '速尔快递'],
+            'cainiao': ['菜鸟', '菜鸟裹裹', '菜鸟速递'],
+            'danniao': ['丹鸟', '丹鸟物流'],
+            'annengwuliu': ['安能', '安能物流'],
+            'yimidida': ['壹米', '壹米滴答'],
+            'fedex': ['联邦', '联邦快递'],
+            'dhl': ['DHL'],
+            'ups': ['UPS'],
+            'tnt': ['TNT'],
+            'usps': ['USPS'],
+            'amazon': ['亚马逊'],
+        }
+        
+        for item in raw_items:
+            extracted_num = None
+            pre_company = None
+            
+            # 先检查是否包含已知的快递公司关键词（只检查中文关键词）
+            for company_code, keywords in company_keywords.items():
+                for keyword in keywords:
+                    # 检查关键词是否在字符串中
+                    idx = item.find(keyword)
+                    if idx >= 0:
+                        pre_company = company_code
+                        # 移除关键词部分，提取可能的单号
+                        remaining = item[:idx] + item[idx + len(keyword):]
+                        remaining = remaining.strip()
+                        if remaining:
+                            # 检查剩余部分是否看起来像单号
+                            if len(remaining) >= 6:
+                                extracted_num = remaining
+                        break
+                if extracted_num:
+                    break
+            
+            # 如果没有通过关键词找到，尝试提取单号
+            if not extracted_num:
+                # 按空格分割，找出最像单号的部分
+                parts = item.split()
+                for part in parts:
+                    part = part.strip()
+                    # 检查是否像快递单号（长度>=6，包含字母或数字）
+                    if len(part) >= 6 and any(c.isalnum() for c in part):
+                        # 确保不是纯中文
+                        if not all('\u4e00' <= c <= '\u9fff' for c in part):
+                            extracted_num = part
+                            break
+                
+                # 如果还是没找到，检查整个字符串
+                if not extracted_num:
+                    # 移除所有空格和中文字符
+                    cleaned = re.sub(r'[\s\u4e00-\u9fff]+', '', item)
+                    if len(cleaned) >= 6:
+                        extracted_num = cleaned
+                    else:
+                        extracted_num = item
+            
+            # 清理单号
+            if extracted_num:
+                # 移除中文和特殊字符
+                extracted_num = re.sub(r'[\u4e00-\u9fff\s]+', '', extracted_num)
+                extracted_num = extracted_num.strip()
+                
+                # 提取字母数字部分
+                alnum_part = ''.join(c for c in extracted_num if c.isalnum())
+                if len(alnum_part) >= 6:
+                    extracted_num = alnum_part
+                
+                if extracted_num and len(extracted_num) >= 6:
+                    numbers.append(extracted_num)
+                    if pre_company:
+                        pre_recognized_companies[extracted_num] = pre_company
+        
+        # 去重并保持顺序
+        seen = set()
+        unique_numbers = []
+        for num in numbers:
+            if num not in seen:
+                seen.add(num)
+                unique_numbers.append(num)
+                
+        # 默认公司
+        default_company_name = self.company_combo.currentText()
+        default_company_code = self.company_codes.get(default_company_name, "")
+        auto_detect = self.auto_detect_check.isChecked()
+        
+        # 更新预览表格
+        self.preview_table.setRowCount(len(unique_numbers))
+        
+        self.imported_numbers = []
+        valid_count = 0
+        duplicate_warning = len(numbers) - len(unique_numbers)
+        
+        for row, num in enumerate(unique_numbers):
+            self.preview_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+            self.preview_table.setItem(row, 1, QTableWidgetItem(num))
+            
+            # 确定快递公司 - 关键修改：不确定时使用空字符串让API自动识别
+            company_code = ""
+            company_name = "自动识别"
+            status = "API自动"
+            status_color = QColor(100, 100, 100)
+            
+            # 优先使用从文本中识别的公司（这是最可靠的）
+            if num in pre_recognized_companies:
+                company_code = pre_recognized_companies[num]
+                company_name = self.get_company_name_by_code(company_code)
+                status = "从文本识别"
+                status_color = QColor(0, 100, 200)
+            elif auto_detect:
+                # 只有当单号有明显特征时才自动识别
+                # 对于纯数字单号，如果没有文本识别，就留空让API自动判断
+                detected_code = self.detect_company_by_number(num)
+                if detected_code:
+                    company_code = detected_code
+                    company_name = self.get_company_name_by_code(detected_code)
+                    status = "格式识别"
+                    status_color = QColor(0, 150, 0)
+                else:
+                    # 无法识别，使用空字符串让API自动判断
+                    company_code = ""
+                    company_name = "自动识别"
+                    status = "API自动"
+                    status_color = QColor(100, 100, 100)
+            else:
+                # 使用默认公司
+                company_code = default_company_code
+                company_name = default_company_name
+                status = "使用默认"
+                status_color = QColor(255, 165, 0)
+            
+            status_item = QTableWidgetItem(status)
+            status_item.setForeground(status_color)
+            
+            self.preview_table.setItem(row, 2, QTableWidgetItem(company_name))
+            self.preview_table.setItem(row, 3, status_item)
+            
+            self.imported_numbers.append({
+                'number': num,
+                'company_code': company_code,
+                'company_name': company_name
+            })
+            
+            valid_count += 1
+            
+        self.stats_label.setText(f"共 {len(unique_numbers)} 个单号")
+        self.valid_count_label.setText(f"有效：{valid_count}")
+        
+        if duplicate_warning > 0:
+            self.duplicate_count_label.setText(f"去重：{duplicate_warning}")
+        else:
+            self.duplicate_count_label.setText("无重复")
+            
+        self.import_btn.setEnabled(valid_count > 0)
+        self.preview_table.resizeColumnsToContents()
+        
+    def preview_numbers(self):
+        """预览解析结果"""
+        self.parse_numbers()
+        
+    def clear_all(self):
+        """清空所有"""
+        self.file_path_edit.clear()
+        self.text_edit.clear()
+        self.preview_table.setRowCount(0)
+        self.stats_label.setText("共 0 个单号")
+        self.valid_count_label.setText("有效：0")
+        self.duplicate_count_label.setText("去重：0")
+        self.imported_numbers = []
+        self.import_btn.setEnabled(False)
+        
+    def get_imported_numbers(self) -> List[Dict]:
+        """获取导入的单号列表"""
+        return self.imported_numbers
+
+class CropImageDialog(QDialog):
+    """图片裁剪对话框"""
+    
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self.original_pixmap = pixmap
+        self.cropped_pixmap = None
+        self.selection_rect = None
+        self.is_selecting = False
+        self.start_pos = None
+        self.init_ui()
+        
+    def init_ui(self):
+        self.setWindowTitle("裁剪图片")
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # 提示标签
+        hint_label = QLabel("按住鼠标左键拖动选择裁剪区域，松开完成选择")
+        hint_label.setStyleSheet("color: #666; padding: 5px;")
+        layout.addWidget(hint_label)
+        
+        # 图片显示区域
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("border: 1px solid #ccc; background-color: #f5f5f5;")
+        
+        # 缩放图片以适应窗口
+        self.scaled_pixmap = self.original_pixmap.scaled(
+            600, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.scale_factor = self.scaled_pixmap.width() / self.original_pixmap.width()
+        
+        self.image_label.setPixmap(self.scaled_pixmap)
+        
+        # 启用鼠标跟踪
+        self.image_label.setMouseTracking(True)
+        self.image_label.mousePressEvent = self.mouse_press_event
+        self.image_label.mouseMoveEvent = self.mouse_move_event
+        self.image_label.mouseReleaseEvent = self.mouse_release_event
+        self.image_label.paintEvent = self.paint_event
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.image_label)
+        scroll_area.setWidgetResizable(False)
+        scroll_area.setAlignment(Qt.AlignCenter)
+        layout.addWidget(scroll_area)
+        
+        # 信息标签
+        self.info_label = QLabel("未选择区域")
+        self.info_label.setStyleSheet("padding: 5px;")
+        layout.addWidget(self.info_label)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        self.reset_btn = QPushButton("重置选择")
+        self.reset_btn.clicked.connect(self.reset_selection)
+        btn_layout.addWidget(self.reset_btn)
+        
+        btn_layout.addStretch()
+        
+        self.ok_btn = QPushButton("确认裁剪")
+        self.ok_btn.clicked.connect(self.accept_crop)
+        self.ok_btn.setEnabled(False)
+        btn_layout.addWidget(self.ok_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+    def mouse_press_event(self, event):
+        """鼠标按下事件"""
+        if event.button() == Qt.LeftButton:
+            self.start_pos = event.pos()
+            self.is_selecting = True
+            self.selection_rect = None
+            
+    def mouse_move_event(self, event):
+        """鼠标移动事件"""
+        if self.is_selecting and self.start_pos:
+            # 更新选择区域
+            end_pos = event.pos()
+            x = min(self.start_pos.x(), end_pos.x())
+            y = min(self.start_pos.y(), end_pos.y())
+            w = abs(self.start_pos.x() - end_pos.x())
+            h = abs(self.start_pos.y() - end_pos.y())
+            
+            # 确保在选择区域内
+            x = max(0, min(x, self.scaled_pixmap.width() - 1))
+            y = max(0, min(y, self.scaled_pixmap.height() - 1))
+            w = min(w, self.scaled_pixmap.width() - x)
+            h = min(h, self.scaled_pixmap.height() - y)
+            
+            if w > 5 and h > 5:
+                self.selection_rect = QRect(x, y, w, h)
+                self.info_label.setText(f"选择区域: {w} x {h} 像素")
+            
+            self.image_label.update()
+            
+    def mouse_release_event(self, event):
+        """鼠标释放事件"""
+        if event.button() == Qt.LeftButton and self.is_selecting:
+            self.is_selecting = False
+            if self.selection_rect and self.selection_rect.width() > 10 and self.selection_rect.height() > 10:
+                self.ok_btn.setEnabled(True)
+            else:
+                self.selection_rect = None
+                self.info_label.setText("未选择区域（请拖动选择有效区域）")
+            self.image_label.update()
+            
+    def paint_event(self, event):
+        """绘制事件 - 绘制选择框"""
+        # 先调用原始的绘制
+        QLabel.paintEvent(self.image_label, event)
+        
+        # 绘制选择框
+        if self.selection_rect:
+            painter = QPainter(self.image_label)
+            painter.setPen(QPen(QColor(0, 120, 215), 2, Qt.DashLine))
+            painter.drawRect(self.selection_rect)
+            
+            # 绘制半透明遮罩
+            painter.setBrush(QColor(0, 120, 215, 30))
+            painter.drawRect(self.selection_rect)
+            
+    def reset_selection(self):
+        """重置选择"""
+        self.selection_rect = None
+        self.ok_btn.setEnabled(False)
+        self.info_label.setText("未选择区域")
+        self.image_label.update()
+        
+    def accept_crop(self):
+        """确认裁剪"""
+        if not self.selection_rect:
+            return
+            
+        # 计算原始图片上的裁剪区域
+        scale = 1.0 / self.scale_factor
+        orig_x = int(self.selection_rect.x() * scale)
+        orig_y = int(self.selection_rect.y() * scale)
+        orig_w = int(self.selection_rect.width() * scale)
+        orig_h = int(self.selection_rect.height() * scale)
+        
+        # 裁剪图片
+        self.cropped_pixmap = self.original_pixmap.copy(orig_x, orig_y, orig_w, orig_h)
+        self.accept()
+        
+    def get_cropped_image(self) -> QPixmap:
+        """获取裁剪后的图片"""
+        return self.cropped_pixmap
 
 def main():
     """主函数"""
