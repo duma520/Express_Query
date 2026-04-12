@@ -1,4 +1,4 @@
-# Express_Query_Pro.py
+# Express_Query_Pro.py - 完整版（增强站点分析功能）
 import sys
 import os
 import hashlib
@@ -20,17 +20,17 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget,
     QListWidgetItem, QTextEdit, QScrollArea, QProgressBar, QStatusBar,
     QTabWidget, QDialog, QFileDialog, QMessageBox, QInputDialog, QCheckBox,
-    QSpinBox, QDateEdit, QCalendarWidget, QMenu
+    QSpinBox, QDateEdit, QCalendarWidget, QMenu, QSplitter, QHeaderView
 )
 
 from PySide6.QtCore import (
     Qt, QThread, Signal, QTimer, QSize, QByteArray, QBuffer, QIODevice,
-    QDate, QUrl
+    QDate, QUrl, QRect, QObject
 )
 
 from PySide6.QtGui import (
     QFont, QColor, QPixmap, QIcon, QImage, QPainter, QPalette, QBrush,
-    QCursor, QKeySequence, QAction, QShortcut
+    QCursor, QKeySequence, QAction, QShortcut, QPen, QTransform
 )
 
 
@@ -51,7 +51,7 @@ APP_DIR = get_app_dir()
 # ==================== 项目信息元数据 ====================
 class ProjectInfo:
     """项目信息元数据（集中管理所有项目相关信息）"""
-    VERSION = "1.1.45"  # 更新版本号
+    VERSION = "1.1.54"  # 更新版本号
     BUILD_DATE = "2026-04-12"
     AUTHOR = "杜玛"
     LICENSE = "GNU Affero General Public License v3.0"
@@ -60,7 +60,7 @@ class ProjectInfo:
     MAINTAINER_EMAIL = "不提供"
     NAME = "快递查询系统"
     NAME_ENG = "Express_Query"
-    DESCRIPTION = "Express_Query 快递查询系统"
+    DESCRIPTION = "Express_Query 快递查询系统 - 支持物流节点时间分析与站点预估"
     
     @classmethod
     def get_full_name(cls) -> str:
@@ -145,75 +145,73 @@ class ProjectInfo:
         }
 
 
-
-
-
 # 全局常量
 APP_NAME = ProjectInfo.NAME_ENG
 APP_VERSION = ProjectInfo.VERSION
-DB_VERSION = "1.0"
+DB_VERSION = "1.1"
 BACKUP_DIR = "backups"
 MAX_BACKUP_COUNT = 30
 DEBUG_MODE = False
+
 
 # ==================== 马卡龙色系定义 ====================
 class MacaronColors:
     """马卡龙色系完整定义"""
     # 粉色系
-    PINK_SAKURA = QColor('#FFB7CE')      # 樱花粉
-    PINK_ROSE = QColor('#FF9AA2')        # 玫瑰粉
-    PINK_COTTON = QColor('#FFD1DC')      # 棉花粉
-    PINK_BALLET = QColor('#FCC9D3')      # 芭蕾粉
+    PINK_SAKURA = QColor('#FFB7CE')
+    PINK_ROSE = QColor('#FF9AA2')
+    PINK_COTTON = QColor('#FFD1DC')
+    PINK_BALLET = QColor('#FCC9D3')
     
     # 蓝色系
-    BLUE_SKY = QColor('#A2E1F6')         # 天空蓝
-    BLUE_MIST = QColor('#C2E5F9')        # 雾霾蓝
-    BLUE_PERIWINKLE = QColor('#C5D0E6')  # 长春花蓝
-    BLUE_LAVENDER = QColor('#D6EAF8')    # 薰衣草蓝
+    BLUE_SKY = QColor('#A2E1F6')
+    BLUE_MIST = QColor('#C2E5F9')
+    BLUE_PERIWINKLE = QColor('#C5D0E6')
+    BLUE_LAVENDER = QColor('#D6EAF8')
     
     # 绿色系
-    GREEN_MINT = QColor('#B5EAD7')       # 薄荷绿
-    GREEN_APPLE = QColor('#D4F1C7')      # 苹果绿
-    GREEN_PISTACHIO = QColor('#D8E9D6')  # 开心果绿
-    GREEN_SAGE = QColor('#C9DFC5')       # 鼠尾草绿
+    GREEN_MINT = QColor('#B5EAD7')
+    GREEN_APPLE = QColor('#D4F1C7')
+    GREEN_PISTACHIO = QColor('#D8E9D6')
+    GREEN_SAGE = QColor('#C9DFC5')
     
     # 黄色/橙色系
-    YELLOW_LEMON = QColor('#FFEAA5')      # 柠檬黄
-    YELLOW_CREAM = QColor('#FFF8B8')      # 奶油黄
-    YELLOW_HONEY = QColor('#FCE5B4')      # 蜂蜜黄
-    ORANGE_PEACH = QColor('#FFDAC1')      # 蜜桃橙
-    ORANGE_APRICOT = QColor('#FDD9B5')    # 杏色
+    YELLOW_LEMON = QColor('#FFEAA5')
+    YELLOW_CREAM = QColor('#FFF8B8')
+    YELLOW_HONEY = QColor('#FCE5B4')
+    ORANGE_PEACH = QColor('#FFDAC1')
+    ORANGE_APRICOT = QColor('#FDD9B5')
     
     # 紫色系
-    PURPLE_LAVENDER = QColor('#C7CEEA')   # 薰衣草紫
-    PURPLE_TARO = QColor('#D8BFD8')       # 香芋紫
-    PURPLE_WISTERIA = QColor('#C9B6D9')   # 紫藤
-    PURPLE_MAUVE = QColor('#E0C7D7')      # 淡紫
+    PURPLE_LAVENDER = QColor('#C7CEEA')
+    PURPLE_TARO = QColor('#D8BFD8')
+    PURPLE_WISTERIA = QColor('#C9B6D9')
+    PURPLE_MAUVE = QColor('#E0C7D7')
     
     # 中性色
-    NEUTRAL_CARAMEL = QColor('#F0E6DD')   # 焦糖奶霜
-    NEUTRAL_CREAM = QColor('#F7F1E5')     # 奶油白
-    NEUTRAL_MOCHA = QColor('#EAD7C7')     # 摩卡
-    NEUTRAL_ALMOND = QColor('#F2E4D4')    # 杏仁
+    NEUTRAL_CARAMEL = QColor('#F0E6DD')
+    NEUTRAL_CREAM = QColor('#F7F1E5')
+    NEUTRAL_MOCHA = QColor('#EAD7C7')
+    NEUTRAL_ALMOND = QColor('#F2E4D4')
     
     # 其他颜色
-    RED_CORAL = QColor('#FFB3A7')          # 珊瑚红
-    RED_WATERMELON = QColor('#FFC5C5')     # 西瓜红
-    TEAL_MINT = QColor('#B8E2DE')          # 薄荷绿蓝
+    RED_CORAL = QColor('#FFB3A7')
+    RED_WATERMELON = QColor('#FFC5C5')
+    TEAL_MINT = QColor('#B8E2DE')
     
     # 文字颜色
-    TEXT_DARK = QColor('#5A5A5A')          # 深灰色文字
-    TEXT_MEDIUM = QColor('#7A7A7A')        # 中灰色文字
-    TEXT_LIGHT = QColor('#9A9A9A')         # 浅灰色文字
+    TEXT_DARK = QColor('#5A5A5A')
+    TEXT_MEDIUM = QColor('#7A7A7A')
+    TEXT_LIGHT = QColor('#9A9A9A')
     
     # 边框颜色
-    BORDER_LIGHT = QColor('#E8E0D5')       # 浅边框
-    BORDER_MEDIUM = QColor('#D4C9BD')      # 中等边框
+    BORDER_LIGHT = QColor('#E8E0D5')
+    BORDER_MEDIUM = QColor('#D4C9BD')
     
     # 背景颜色
-    BG_MAIN = QColor('#FDF8F5')            # 主背景色
-    BG_CARD = QColor('#FFFFFF')            # 卡片背景色
-    BG_HOVER = QColor('#F5F0EB')           # 悬停背景色
+    BG_MAIN = QColor('#FDF8F5')
+    BG_CARD = QColor('#FFFFFF')
+    BG_HOVER = QColor('#F5F0EB')
     
     @classmethod
     def get_color_list(cls):
@@ -276,7 +274,6 @@ class MacaronStyle:
                 background-color: transparent;
             }}
             
-            /* 按钮 - 去掉圆角和多余padding */
             QPushButton {{
                 background-color: {MacaronColors.BLUE_LAVENDER.name()};
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
@@ -297,7 +294,6 @@ class MacaronStyle:
                 color: {MacaronColors.TEXT_LIGHT.name()};
             }}
             
-            /* 输入框 - 保持原始高度 */
             QLineEdit {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 padding: 2px 4px;
@@ -309,7 +305,6 @@ class MacaronStyle:
                 border: 1px solid {MacaronColors.BLUE_SKY.name()};
             }}
             
-            /* 下拉框 - 保持原始高度 */
             QComboBox {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 padding: 2px 4px;
@@ -333,7 +328,6 @@ class MacaronStyle:
                 margin-right: 4px;
             }}
             
-            /* 表格 - 去掉圆角 */
             QTableWidget {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 background-color: white;
@@ -427,27 +421,59 @@ class MacaronStyle:
                 background-color: {MacaronColors.PINK_SAKURA.name()};
             }}
             
+            /* ========== 增强的进度条样式 ========== */
             QProgressBar {{
-                border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
-                background-color: {MacaronColors.NEUTRAL_CREAM.name()};
+                border: 1px solid {MacaronColors.BORDER_MEDIUM.name()};
+                border-radius: 4px;
+                background-color: #E8E8E8;
                 text-align: center;
                 color: {MacaronColors.TEXT_DARK.name()};
+                font-weight: bold;
+                min-height: 18px;
             }}
             
             QProgressBar::chunk {{
-                background-color: {MacaronColors.GREEN_MINT.name()};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {MacaronColors.GREEN_MINT.name()},
+                    stop:0.5 {MacaronColors.BLUE_SKY.name()},
+                    stop:1 {MacaronColors.PURPLE_LAVENDER.name()});
+                border-radius: 3px;
+                margin: 1px;
             }}
             
+            /* 不确定进度模式（旋转进度条） */
+            QProgressBar:horizontal {{
+                min-height: 20px;
+            }}
+            
+            /* 状态栏进度条特殊样式 */
+            QStatusBar QProgressBar {{
+                border: 2px solid {MacaronColors.BORDER_MEDIUM.name()};
+                border-radius: 5px;
+                background-color: #E8E8E8;
+                text-align: center;
+                color: {MacaronColors.TEXT_DARK.name()};
+                font-weight: bold;
+                min-height: 20px;
+                max-height: 25px;
+            }}
+                
+            QStatusBar QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {MacaronColors.GREEN_APPLE.name()},
+                    stop:0.5 {MacaronColors.BLUE_SKY.name()},
+                    stop:1 {MacaronColors.ORANGE_PEACH.name()});
+                border-radius: 3px;
+                margin: 1px;
+            }}
+
             QStatusBar {{
                 background-color: {MacaronColors.NEUTRAL_CREAM.name()};
                 color: {MacaronColors.TEXT_MEDIUM.name()};
                 border-top: 1px solid {MacaronColors.BORDER_LIGHT.name()};
+                min-height: 28px;
             }}
-            
-            QLabel {{
-                color: {MacaronColors.TEXT_DARK.name()};
-            }}
-            
+                        
             QTextEdit {{
                 border: 1px solid {MacaronColors.BORDER_LIGHT.name()};
                 background-color: white;
@@ -683,6 +709,8 @@ class DatabaseManagerPro:
             except Exception as e:
                 if DEBUG_MODE:
                     print(f"更新执行失败: {e}")
+                    print(f"  SQL: {query}")
+                    print(f"  参数: {params}")
                 return False
                 
     def execute_many(self, query: str, params_list: List[tuple]) -> bool:
@@ -737,6 +765,1125 @@ class DatabaseManagerPro:
         except Exception as e:
             if DEBUG_MODE:
                 print(f"数据库优化失败: {e}")
+
+
+# ==================== 物流节点时间分析器（增强版） ====================
+class LogisticsNodeAnalyzer:
+    """物流节点时间分析器 - 分析快递在每个站点的停留和运输时间，支持站点预估"""
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        self.db_manager = db_manager
+        self.init_node_history_table()
+        
+    def init_node_history_table(self):
+        """初始化节点历史数据表（增强版 - 包含站点字段）"""
+        sql = """
+        CREATE TABLE IF NOT EXISTS node_transit_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_code TEXT NOT NULL,
+            from_city TEXT,
+            to_city TEXT,
+            from_site TEXT,
+            to_site TEXT,
+            node_type TEXT,
+            action_type TEXT,
+            avg_hours REAL,
+            sample_count INTEGER DEFAULT 1,
+            min_hours REAL,
+            max_hours REAL,
+            route_key TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        self.db_manager.execute_update(sql)
+        
+        # 尝试添加新字段（如果表已存在但缺少字段）
+        try:
+            self.db_manager.execute_update("ALTER TABLE node_transit_history ADD COLUMN from_site TEXT")
+        except:
+            pass
+        try:
+            self.db_manager.execute_update("ALTER TABLE node_transit_history ADD COLUMN to_site TEXT")
+        except:
+            pass
+        
+        # 尝试删除旧的 UNIQUE 约束并创建新的
+        try:
+            # SQLite 不支持直接删除约束，需要重建表
+            # 但我们可以先检查是否存在旧约束，如果有则重建
+            self.db_manager.execute_update("""
+                CREATE TABLE IF NOT EXISTS node_transit_history_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_code TEXT NOT NULL,
+                    from_city TEXT,
+                    to_city TEXT,
+                    from_site TEXT,
+                    to_site TEXT,
+                    node_type TEXT,
+                    action_type TEXT,
+                    avg_hours REAL,
+                    sample_count INTEGER DEFAULT 1,
+                    min_hours REAL,
+                    max_hours REAL,
+                    route_key TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(company_code, from_city, to_city, from_site, to_site, node_type, action_type)
+                )
+            """)
+            
+            # 复制数据
+            self.db_manager.execute_update("""
+                INSERT INTO node_transit_history_new 
+                SELECT * FROM node_transit_history
+            """)
+            
+            # 删除旧表，重命名新表
+            self.db_manager.execute_update("DROP TABLE node_transit_history")
+            self.db_manager.execute_update("ALTER TABLE node_transit_history_new RENAME TO node_transit_history")
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"重建表结构失败（可忽略）: {e}")
+        
+        # 创建索引
+        index_sqls = [
+            "CREATE INDEX IF NOT EXISTS idx_node_route ON node_transit_history(route_key)",
+            "CREATE INDEX IF NOT EXISTS idx_node_company ON node_transit_history(company_code)",
+            "CREATE INDEX IF NOT EXISTS idx_node_from_site ON node_transit_history(from_site)",
+            "CREATE INDEX IF NOT EXISTS idx_node_to_site ON node_transit_history(to_site)"
+        ]
+        for sql in index_sqls:
+            self.db_manager.execute_update(sql)
+            
+    def extract_nodes_from_track(self, track_list: List[Dict]) -> List[Dict]:
+        """
+        从物流轨迹中提取节点信息（增强版）
+        返回节点列表，每个节点包含：时间、城市、站点名称、节点类型、动作类型、揽收员信息
+        注意：返回的节点列表按时间从旧到新排序
+        """
+        nodes = []
+        
+        for track in track_list:
+            context = track.get('context', '')
+            time_str = track.get('time', '')
+            
+            if not time_str:
+                continue
+                
+            try:
+                time_dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+            except:
+                continue
+            
+            # 识别节点信息
+            node_type = self._identify_node_type(context)
+            action_type = self._identify_action_type(context)
+            city = self._extract_city(context)
+            site_name = self._extract_site_name(context)
+            courier_info = self._extract_courier_info(context)
+            
+            nodes.append({
+                'time': time_dt,
+                'time_str': time_str,
+                'context': context,
+                'city': city,
+                'site_name': site_name,
+                'node_type': node_type,
+                'action_type': action_type,
+                'courier_info': courier_info
+            })
+        
+        # 按时间从旧到新排序
+        nodes.sort(key=lambda x: x['time'])
+        
+        if DEBUG_MODE and nodes:
+            print(f"  [节点排序] 共 {len(nodes)} 个节点，时间范围: {nodes[0]['time_str']} → {nodes[-1]['time_str']}")
+        
+        return nodes
+    
+    def _extract_site_name(self, context: str) -> str:
+        """提取站点名称，如【广州市机场北包件车间】"""
+        # 匹配中文方括号内的内容
+        pattern = r'【([^】]+)】'
+        matches = re.findall(pattern, context)
+        if matches:
+            for match in matches:
+                # 排除时间格式和电话相关内容
+                if not re.match(r'\d{4}-\d{2}-\d{2}', match) and '电话' not in match:
+                    return match.strip()
+        return ""
+    
+    def _extract_courier_info(self, context: str) -> Dict:
+        """提取揽收员/快递员信息"""
+        info = {'name': '', 'phone': ''}
+        
+        # 提取姓名和电话
+        name_patterns = [
+            r'揽收员([^（(]+)',
+            r'快递员[【]?([^】】]+)',
+            r'派件员[【]?([^】】]+)'
+        ]
+        phone_pattern = r'电话[:：]?(\d{11})'
+        
+        for pattern in name_patterns:
+            name_match = re.search(pattern, context)
+            if name_match:
+                info['name'] = name_match.group(1).strip()
+                break
+        
+        phone_match = re.search(phone_pattern, context)
+        if phone_match:
+            info['phone'] = phone_match.group(1)
+            
+        return info
+    
+    def _identify_node_type(self, context: str) -> str:
+        """识别节点类型"""
+        context_lower = context.lower()
+        
+        # 转运中心/分拨中心
+        if any(kw in context_lower or kw in context for kw in 
+               ['转运中心', '分拨中心', '处理中心', '中转中心', '分拣中心', '转运站',
+                '包件车间', '直投中心', '投递部', '揽投部']):
+            return 'transit_center'
+        # 营业点/网点
+        if any(kw in context_lower or kw in context for kw in 
+               ['营业点', '网点', '服务点', '分公司', '分部', '营业部']):
+            return 'service_point'
+        # 驿站/代收点
+        if any(kw in context_lower or kw in context for kw in 
+               ['驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站',
+                '店', '超市', '代理点']):
+            return 'pickup_point'
+        # 机场
+        if any(kw in context_lower or kw in context for kw in ['机场', '航空']):
+            return 'airport'
+        # 火车站
+        if '火车站' in context or '高铁' in context:
+            return 'railway'
+        return 'unknown'
+    
+    def _identify_action_type(self, context: str) -> str:
+        """识别动作类型"""
+        context_lower = context.lower()
+        
+        # 到达
+        if any(kw in context_lower or kw in context for kw in 
+               ['到达', '已到达', '抵达', '进站', '到件', '到站']):
+            return 'arrive'
+        # 离开/发出
+        if any(kw in context_lower or kw in context for kw in 
+               ['离开', '发出', '发往', '发件', '出站', '出库', '已发出']):
+            return 'depart'
+        # 派送
+        if any(kw in context_lower or kw in context for kw in 
+               ['派送', '派件', '投递', '快递员派送', '正在派送']):
+            return 'delivering'
+        # 签收
+        if any(kw in context_lower or kw in context for kw in 
+               ['签收', '已签收', '妥投', '本人签收']):
+            return 'signed'
+        # 揽收
+        if any(kw in context_lower or kw in context for kw in 
+               ['揽收', '已揽件', '收件', '取件', '已取件']):
+            return 'pickup'
+        # 已派送至驿站/代收点
+        if any(kw in context_lower or kw in context for kw in 
+               ['已派送至', '派送至', '投递至']):
+            return 'arrived_pickup'
+        return 'status'
+    
+    def _extract_city(self, context: str) -> str:
+        """从上下文提取城市名"""
+        # 常见城市列表
+        cities = ['北京', '上海', '广州', '深圳', '杭州', '南京', '武汉', '成都', '重庆',
+                  '天津', '苏州', '西安', '郑州', '长沙', '青岛', '济南', '合肥', '福州',
+                  '厦门', '宁波', '大连', '沈阳', '哈尔滨', '长春', '昆明', '南宁', '贵阳',
+                  '太原', '石家庄', '南昌', '乌鲁木齐', '兰州', '呼和浩特', '银川', '西宁',
+                  '海口', '三亚', '珠海', '佛山', '东莞', '惠州', '中山', '江门', '湛江',
+                  '无锡', '常州', '南通', '扬州', '镇江', '徐州', '温州', '绍兴', '嘉兴',
+                  '金华', '台州', '泉州', '漳州', '莆田', '龙岩', '烟台', '威海', '潍坊']
+        
+        for city in cities:
+            if city in context:
+                return city
+        return ""
+    
+    def calculate_node_transit_times(self, nodes: List[Dict]) -> List[Dict]:
+        """
+        计算节点间的运输时间和停留时间（增强版）
+        返回各阶段的时间分析，包含站点信息
+        """
+        if len(nodes) < 2:
+            return []
+            
+        segments = []
+        
+        for i in range(1, len(nodes)):
+            prev_node = nodes[i-1]
+            curr_node = nodes[i]
+            
+            # 计算绝对时间差（小时）
+            time_diff = abs((curr_node['time'] - prev_node['time']).total_seconds()) / 3600
+            
+            # 判断是否为停留（同一站点且不是出发动作）
+            is_dwell = (prev_node['site_name'] == curr_node['site_name'] and 
+                       prev_node['site_name'] and 
+                       prev_node['action_type'] != 'depart')
+            
+            segment = {
+                'from_city': prev_node['city'],
+                'to_city': curr_node['city'],
+                'from_site': prev_node['site_name'],
+                'to_site': curr_node['site_name'],
+                'from_time': prev_node['time_str'],
+                'to_time': curr_node['time_str'],
+                'hours': round(time_diff, 1),
+                'is_dwell': is_dwell,
+                'from_node_type': prev_node['node_type'],
+                'to_node_type': curr_node['node_type'],
+                'from_action': prev_node['action_type'],
+                'to_action': curr_node['action_type'],
+                'context': curr_node['context'],
+                'courier_info': curr_node.get('courier_info', {})
+            }
+            segments.append(segment)
+            
+        return segments
+    
+    def record_node_transit(self, express_data: Dict):
+        """记录节点运输时间到历史库"""
+        track_list = express_data.get('data', [])
+        if len(track_list) < 2:
+            if DEBUG_MODE:
+                print(f"  [跳过] 轨迹不足2条")
+            return
+            
+        # 获取company_code，确保不为空
+        company_code = express_data.get('com', '')
+        if not company_code:
+            company_code = express_data.get('company_code', '')
+        if not company_code:
+            # 尝试从单号推断
+            nu = express_data.get('nu', '')
+            if nu.startswith('YT'):
+                company_code = 'yuantong'
+            elif nu.startswith('JT'):
+                company_code = 'jtexpress'
+            elif nu.startswith('JD'):
+                company_code = 'jd'
+            elif nu.isdigit() and len(nu) >= 10:
+                company_code = 'unknown'
+            else:
+                company_code = 'unknown'
+        
+        if DEBUG_MODE:
+            print(f"  [记录节点] 单号: {express_data.get('nu', '')}, 公司: {company_code}, 轨迹数: {len(track_list)}")
+            
+        nodes = self.extract_nodes_from_track(track_list)
+        segments = self.calculate_node_transit_times(nodes)
+        
+        recorded_count = 0
+        for seg in segments:
+            hours = seg['hours']
+            # 放宽时间范围：0.01-720小时
+            if 0.01 <= hours <= 720:
+                if seg['is_dwell']:
+                    # 停留段：记录为停留
+                    self._update_node_history(
+                        company_code,
+                        seg['from_city'],
+                        seg['to_city'],
+                        seg['from_site'],
+                        seg['to_site'],
+                        'dwell',
+                        'stay',
+                        hours
+                    )
+                    recorded_count += 1
+                else:
+                    # 运输段：记录为运输
+                    self._update_node_history(
+                        company_code,
+                        seg['from_city'],
+                        seg['to_city'],
+                        seg['from_site'],
+                        seg['to_site'],
+                        seg['from_node_type'],
+                        seg['to_action'],
+                        hours
+                    )
+                    recorded_count += 1
+            else:
+                if DEBUG_MODE:
+                    print(f"  [跳过段] 时间超出范围: {hours}h")
+        
+        if DEBUG_MODE:
+            print(f"  本次共记录 {recorded_count} 条节点数据")
+
+    def verify_table_structure(self):
+        """验证表结构"""
+        try:
+            # 检查表是否存在
+            check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='node_transit_history'"
+            result = self.db_manager.execute_query(check_sql)
+            if not result:
+                print("[错误] node_transit_history 表不存在")
+                return False
+            
+            # 获取表结构
+            pragma_sql = "PRAGMA table_info(node_transit_history)"
+            columns = self.db_manager.execute_query(pragma_sql)
+            print("[表结构] node_transit_history 列:")
+            for col in columns:
+                print(f"  {col['name']} ({col['type']})")
+            return True
+        except Exception as e:
+            print(f"[错误] 验证表结构失败: {e}")
+            return False
+
+    def _update_node_history(self, company_code: str, from_city: str, to_city: str,
+                            from_site: str, to_site: str,
+                            node_type: str, action_type: str, hours: float):
+        """更新节点历史数据（增强版 - 包含站点信息）"""
+        from_city_display = from_city if from_city else "未知"
+        to_city_display = to_city if to_city else "未知"
+        from_site_display = from_site if from_site else ""
+        to_site_display = to_site if to_site else ""
+        
+        route_key = f"{from_city_display}→{to_city_display}"
+        if from_site_display and to_site_display:
+            route_key = f"{from_site_display}→{to_site_display}"
+        
+        if hours < 0.01 or hours > 720:
+            if DEBUG_MODE:
+                print(f"  [跳过] 时间超出范围: {hours}小时")
+            return
+        
+        if DEBUG_MODE:
+            print(f"  [尝试记录] {company_code}: {from_site_display}→{to_site_display} ({hours:.1f}h)")
+        
+        # 先尝试精确匹配（包含站点）
+        check_sql = """
+        SELECT id, avg_hours, sample_count, min_hours, max_hours 
+        FROM node_transit_history 
+        WHERE company_code = ? AND from_city = ? AND to_city = ? 
+        AND from_site = ? AND to_site = ?
+        AND node_type = ? AND action_type = ?
+        """
+        existing = self.db_manager.execute_query(check_sql, (
+            company_code, from_city_display, to_city_display,
+            from_site_display, to_site_display,
+            node_type, action_type
+        ))
+        
+        # 如果没有精确匹配，尝试宽松匹配（站点可能为空）
+        if not existing:
+            check_sql = """
+            SELECT id, avg_hours, sample_count, min_hours, max_hours 
+            FROM node_transit_history 
+            WHERE company_code = ? AND from_city = ? AND to_city = ? 
+            AND (from_site = '' OR from_site IS NULL) AND (to_site = '' OR to_site IS NULL)
+            AND node_type = ? AND action_type = ?
+            """
+            existing = self.db_manager.execute_query(check_sql, (
+                company_code, from_city_display, to_city_display,
+                node_type, action_type
+            ))
+        
+        if existing:
+            # 更新现有记录
+            old_avg = existing[0]['avg_hours'] or 0
+            old_count = existing[0]['sample_count'] or 0
+            new_avg = (old_avg * old_count + hours) / (old_count + 1)
+            new_count = old_count + 1
+            
+            old_min = existing[0].get('min_hours')
+            old_max = existing[0].get('max_hours')
+            new_min = min(old_min if old_min is not None else hours, hours)
+            new_max = max(old_max if old_max is not None else hours, hours)
+            
+            update_sql = """
+            UPDATE node_transit_history 
+            SET avg_hours = ?, sample_count = ?, min_hours = ?, max_hours = ?, 
+                from_site = CASE WHEN from_site = '' OR from_site IS NULL THEN ? ELSE from_site END,
+                to_site = CASE WHEN to_site = '' OR to_site IS NULL THEN ? ELSE to_site END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """
+            update_result = self.db_manager.execute_update(update_sql, (
+                new_avg, new_count, new_min, new_max, 
+                from_site_display, to_site_display, existing[0]['id']
+            ))
+            if DEBUG_MODE:
+                if update_result:
+                    print(f"    [更新成功] ID={existing[0]['id']}")
+                else:
+                    print(f"    [更新失败]")
+        else:
+            # 插入新记录 - 使用 INSERT OR REPLACE 处理冲突
+            insert_sql = """
+            INSERT OR REPLACE INTO node_transit_history 
+            (company_code, from_city, to_city, from_site, to_site, node_type, action_type, 
+            avg_hours, sample_count, min_hours, max_hours, route_key, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP)
+            """
+            insert_result = self.db_manager.execute_update(insert_sql, (
+                company_code, from_city_display, to_city_display, 
+                from_site_display, to_site_display,
+                node_type, action_type,
+                hours, hours, hours, route_key
+            ))
+            if DEBUG_MODE:
+                if insert_result:
+                    print(f"    [插入成功]")
+                else:
+                    print(f"    [插入失败] SQL执行返回False")
+        
+    def estimate_segment_time(self, company_code: str, from_city: str, to_city: str,
+                              node_type: str = None, action_type: str = None) -> Tuple[Optional[float], str, int]:
+        """
+        预估某段运输的耗时
+        返回 (预估小时数, 说明, 样本数量)
+        """
+        sql = """
+        SELECT avg_hours, sample_count, min_hours, max_hours
+        FROM node_transit_history
+        WHERE company_code = ? AND from_city = ? AND to_city = ?
+        """
+        params = [company_code, from_city, to_city]
+        
+        if node_type:
+            sql += " AND node_type = ?"
+            params.append(node_type)
+        if action_type:
+            sql += " AND action_type = ?"
+            params.append(action_type)
+            
+        result = self.db_manager.execute_query(sql, tuple(params))
+        
+        if result:
+            avg = result[0]['avg_hours']
+            count = result[0]['sample_count']
+            min_h = result[0]['min_hours']
+            max_h = result[0]['max_hours']
+            
+            if count >= 3:
+                return avg, f"基于{count}次历史数据，预计{avg:.1f}小时", count
+            else:
+                return avg, f"基于{count}次数据（较少），预计{avg:.1f}小时", count
+                
+        return None, "暂无历史数据", 0
+    def estimate_next_stations(self, express_data: Dict) -> List[Dict]:
+        """
+        根据当前物流状态，预估到达后续各个关键站点的时间
+        """
+        track_list = express_data.get('data', [])
+        if not track_list:
+            return []
+            
+        company_code = express_data.get('com', '')
+        state = str(express_data.get('state', ''))
+        
+        # 已签收则无需预估
+        if state == '3':
+            return []
+            
+        nodes = self.extract_nodes_from_track(track_list)
+        if not nodes:
+            return []
+            
+        # 获取当前所在的最后一个站点
+        last_node = nodes[-1]
+        current_site = last_node['site_name']
+        current_city = last_node['city']
+        current_action = last_node['action_type']
+        
+        estimates = []
+        
+        # 如果当前正在派送中
+        if current_action == 'delivering':
+            # 预估签收时间
+            sql = """
+            SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            FROM node_transit_history
+            WHERE company_code = ? AND from_site = ? AND to_action = 'signed'
+            """
+            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            if results and results[0]['avg_hours']:
+                avg_hours = results[0]['avg_hours']
+                total_samples = results[0]['total_samples'] or 1
+                estimates.append({
+                    'type': 'signed',
+                    'description': f"预计 {avg_hours:.1f} 小时后签收",
+                    'hours': round(avg_hours, 1),
+                    'confidence': total_samples,
+                    'confidence_level': '高' if total_samples >= 3 else ('中' if total_samples >= 1 else '低')
+                })
+        
+        # 如果当前在转运中心
+        if current_site and '包件车间' in current_site or '处理中心' in current_site or '转运中心' in current_site:
+            # 查询从该站点出发的常见下一站
+            sql = """
+            SELECT to_site, to_city, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            FROM node_transit_history
+            WHERE company_code = ? AND from_site = ? AND to_site != ''
+            GROUP BY to_site
+            ORDER BY total_samples DESC, avg_hours
+            LIMIT 3
+            """
+            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            for row in results:
+                if row['to_site'] and row['avg_hours']:
+                    confidence = row['total_samples'] or 1
+                    estimates.append({
+                        'type': 'next_station',
+                        'next_site': row['to_site'],
+                        'city': row['to_city'],
+                        'description': f"预计 {row['avg_hours']:.1f} 小时后到达 {row['to_site']}",
+                        'hours': round(row['avg_hours'], 1),
+                        'confidence': confidence,
+                        'confidence_level': '高' if confidence >= 3 else ('中' if confidence >= 1 else '低')
+                    })
+        
+        # 通用预估：查询从当前站点出发的所有记录
+        if not estimates and current_site:
+            sql = """
+            SELECT to_site, to_city, to_action, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            FROM node_transit_history
+            WHERE company_code = ? AND from_site = ?
+            GROUP BY to_site, to_action
+            ORDER BY total_samples DESC, avg_hours
+            LIMIT 5
+            """
+            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            for row in results:
+                if row['avg_hours']:
+                    confidence = row['total_samples'] or 1
+                    action_text = self._get_action_text(row['to_action'])
+                    estimates.append({
+                        'type': 'general',
+                        'next_site': row['to_site'] or '下一站',
+                        'description': f"预计 {row['avg_hours']:.1f} 小时后{action_text}",
+                        'hours': round(row['avg_hours'], 1),
+                        'confidence': confidence,
+                        'confidence_level': '高' if confidence >= 3 else ('中' if confidence >= 1 else '低')
+                    })
+        
+        return estimates
+    
+    def _get_action_text(self, action_type: str) -> str:
+        """获取动作类型文本"""
+        action_map = {
+            'arrive': '到达',
+            'depart': '离开',
+            'delivering': '开始派送',
+            'signed': '签收',
+            'pickup': '揽收',
+            'arrived_pickup': '到达取件点'
+        }
+        return action_map.get(action_type, '状态更新')
+    
+    def get_site_timeline_analysis(self, express_data: Dict) -> Dict:
+        """
+        获取站点时间轴分析（详细版）
+        包含每个站点的到达/离开时间和停留时长
+        """
+        track_list = express_data.get('data', [])
+        if not track_list:
+            return {'error': '无物流数据'}
+            
+        nodes = self.extract_nodes_from_track(track_list)
+        if len(nodes) < 2:
+            return {'error': '节点不足，无法分析'}
+        
+        # 按站点聚合
+        site_timeline = []
+        current_site = None
+        site_start_time = None
+        site_events = []
+        
+        for node in nodes:
+            site_name = node['site_name'] or node['city'] or '未知地点'
+            
+            if site_name != current_site:
+                # 保存上一个站点的信息
+                if current_site and site_start_time:
+                    duration = (node['time'] - site_start_time).total_seconds() / 3600
+                    site_timeline.append({
+                        'site': current_site,
+                        'city': node['city'],
+                        'arrive_time': site_start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'depart_time': node['time_str'] if node['action_type'] == 'depart' else None,
+                        'duration_hours': round(duration, 1),
+                        'events': site_events.copy()
+                    })
+                
+                # 开始新站点
+                current_site = site_name
+                site_start_time = node['time']
+                site_events = [node['context']]
+            else:
+                site_events.append(node['context'])
+        
+        # 添加最后一个站点
+        if current_site and site_start_time:
+            last_time = nodes[-1]['time']
+            duration = (last_time - site_start_time).total_seconds() / 3600
+            site_timeline.append({
+                'site': current_site,
+                'city': nodes[-1]['city'],
+                'arrive_time': site_start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'depart_time': None,
+                'duration_hours': round(duration, 1),
+                'events': site_events,
+                'is_current': True
+            })
+        
+        # 提取揽收员信息
+        courier_info = {}
+        for node in nodes:
+            if node.get('courier_info', {}).get('name'):
+                courier_info = node['courier_info']
+                break
+        
+        return {
+            'company_code': express_data.get('com', ''),
+            'tracking_number': express_data.get('nu', ''),
+            'total_sites': len(site_timeline),
+            'site_timeline': site_timeline,
+            'courier_info': courier_info,
+            'total_transit_hours': sum(s['duration_hours'] for s in site_timeline),
+            'current_site': site_timeline[-1]['site'] if site_timeline else None
+        }
+
+    def analyze_and_estimate(self, express_data: Dict) -> Dict:
+        """
+        综合分析并预估整个物流过程（增强版）
+        """
+        track_list = express_data.get('data', [])
+        if not track_list:
+            return {'error': '无物流数据'}
+            
+        company_code = express_data.get('com', '')
+        state = express_data.get('state', '')
+        
+        # 提取节点
+        nodes = self.extract_nodes_from_track(track_list)
+        if len(nodes) < 2:
+            return {'error': '节点不足，无法分析'}
+            
+        # 计算已发生的段
+        segments = self.calculate_node_transit_times(nodes)
+        
+        # 记录到历史
+        self.record_node_transit(express_data)
+        
+        # 获取站点时间轴分析
+        site_analysis = self.get_site_timeline_analysis(express_data)
+        
+        # 获取后续站点预估
+        next_estimates = self.estimate_next_stations(express_data)
+        
+        # 分析结果
+        result = {
+            'company_code': company_code,
+            'tracking_number': express_data.get('nu', ''),
+            'state': state,
+            'is_signed': state == '3',
+            'total_nodes': len(nodes),
+            'segments': [],
+            'site_timeline': site_analysis.get('site_timeline', []),
+            'courier_info': site_analysis.get('courier_info', {}),
+            'summary': {
+                'total_transit_hours': 0,
+                'total_dwell_hours': 0,
+                'cities_visited': [],
+                'sites_visited': [],
+                'key_milestones': []
+            },
+            'estimations': {
+                'next_stations': next_estimates,
+                'remaining_estimate': None,
+                'final_estimate': None
+            }
+        }
+        
+        visited_cities = set()
+        visited_sites = set()
+        total_transit = 0
+        total_dwell = 0
+        
+        # 分析每个段
+        for seg in segments:
+            seg_info = {
+                'from_city': seg['from_city'] or '未知',
+                'to_city': seg['to_city'] or '未知',
+                'from_site': seg['from_site'] or '未知',
+                'to_site': seg['to_site'] or '未知',
+                'hours': seg['hours'],
+                'is_dwell': seg['is_dwell'],
+                'context': seg['context'],
+                'time_range': f"{seg['from_time']} → {seg['to_time']}"
+            }
+            
+            if seg['from_city']:
+                visited_cities.add(seg['from_city'])
+            if seg['to_city']:
+                visited_cities.add(seg['to_city'])
+            if seg['from_site']:
+                visited_sites.add(seg['from_site'])
+            if seg['to_site']:
+                visited_sites.add(seg['to_site'])
+                
+            if seg['is_dwell']:
+                total_dwell += seg['hours']
+            else:
+                total_transit += seg['hours']
+                # 尝试预估类似线路
+                if seg['from_city'] and seg['to_city']:
+                    est_hours, est_note, sample = self.estimate_segment_time(
+                        company_code, seg['from_city'], seg['to_city']
+                    )
+                    seg_info['estimate'] = {
+                        'hours': est_hours,
+                        'note': est_note,
+                        'sample_count': sample
+                    }
+                    
+            result['segments'].append(seg_info)
+            
+        # 汇总信息
+        result['summary']['total_transit_hours'] = round(total_transit, 1)
+        result['summary']['total_dwell_hours'] = round(total_dwell, 1)
+        result['summary']['cities_visited'] = list(visited_cities)
+        result['summary']['sites_visited'] = list(visited_sites)
+        
+        # 提取关键里程碑
+        milestones = []
+        for node in nodes:
+            if node['action_type'] in ['pickup', 'signed', 'arrived_pickup']:
+                milestones.append({
+                    'type': node['action_type'],
+                    'time': node['time_str'],
+                    'city': node['city'],
+                    'site': node['site_name'],
+                    'context': node['context']
+                })
+            elif node['node_type'] == 'transit_center' and node['action_type'] == 'arrive':
+                milestones.append({
+                    'type': 'arrive_transit',
+                    'time': node['time_str'],
+                    'city': node['city'],
+                    'site': node['site_name'],
+                    'context': node['context']
+                })
+        result['summary']['key_milestones'] = milestones
+        
+        # 预估剩余时间
+        if state != '3':  # 未签收
+            # 获取最后一个节点的城市
+            last_node = nodes[-1]
+            last_city = last_node['city']
+            
+            # 尝试从历史中预估到签收的时间
+            if last_city:
+                # 查询从该城市到签收的平均时间
+                sql = """
+                SELECT AVG((julianday(sign_time) - julianday(pickup_time)) * 24) as avg_hours, COUNT(*) as count
+                FROM delivery_history 
+                WHERE company_code = ? AND dest_city = ? AND sign_time IS NOT NULL AND pickup_time IS NOT NULL
+                """
+                result2 = self.db_manager.execute_query(sql, (company_code, last_city))
+                if result2 and result2[0]['avg_hours'] and result2[0]['avg_hours'] > 0:
+                    avg = round(result2[0]['avg_hours'], 1)
+                    result['estimations']['final_estimate'] = {
+                        'hours': avg,
+                        'note': f"基于{result2[0]['count']}次该城市签收记录，预计{avg}小时后签收"
+                    }
+        
+        return result
+    
+    def get_timeline_html(self, express_data: Dict) -> str:
+        """
+        生成物流时间轴HTML（用于显示）
+        """
+        analysis = self.analyze_and_estimate(express_data)
+        
+        if 'error' in analysis:
+            return f"<div class='error'>{analysis['error']}</div>"
+            
+        html = f"""
+        <div class="logistics-timeline">
+            <style>
+                .timeline-container {{
+                    font-family: 'Microsoft YaHei', sans-serif;
+                    padding: 10px;
+                }}
+                .timeline-title {{
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: #4A90D9;
+                    margin-bottom: 15px;
+                    padding-bottom: 8px;
+                    border-bottom: 2px solid #4A90D9;
+                }}
+                .summary-cards {{
+                    display: flex;
+                    gap: 15px;
+                    margin-bottom: 20px;
+                    flex-wrap: wrap;
+                }}
+                .summary-card {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 12px 20px;
+                    border-radius: 12px;
+                    flex: 1;
+                    min-width: 120px;
+                    text-align: center;
+                }}
+                .summary-card.blue {{
+                    background: linear-gradient(135deg, #4A90D9, #357ABD);
+                }}
+                .summary-card.green {{
+                    background: linear-gradient(135deg, #50C878, #3DA85E);
+                }}
+                .summary-card.orange {{
+                    background: linear-gradient(135deg, #FF9800, #F57C00);
+                }}
+                .summary-card .value {{
+                    font-size: 24px;
+                    font-weight: bold;
+                }}
+                .summary-card .label {{
+                    font-size: 12px;
+                    opacity: 0.9;
+                    margin-top: 5px;
+                }}
+                .timeline {{
+                    position: relative;
+                    padding-left: 30px;
+                }}
+                .timeline::before {{
+                    content: '';
+                    position: absolute;
+                    left: 10px;
+                    top: 0;
+                    bottom: 0;
+                    width: 2px;
+                    background: #E0E0E0;
+                }}
+                .timeline-node {{
+                    position: relative;
+                    margin-bottom: 20px;
+                    padding-left: 20px;
+                }}
+                .timeline-node::before {{
+                    content: '';
+                    position: absolute;
+                    left: -24px;
+                    top: 4px;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 50%;
+                    background: #4A90D9;
+                    border: 2px solid white;
+                    box-shadow: 0 0 0 2px #4A90D9;
+                }}
+                .timeline-node.pickup::before {{ background: #50C878; box-shadow: 0 0 0 2px #50C878; }}
+                .timeline-node.signed::before {{ background: #FF9800; box-shadow: 0 0 0 2px #FF9800; }}
+                .timeline-node.transit::before {{ background: #9C27B0; box-shadow: 0 0 0 2px #9C27B0; }}
+                .timeline-time {{
+                    font-size: 12px;
+                    color: #999;
+                    margin-bottom: 4px;
+                }}
+                .timeline-title-text {{
+                    font-weight: bold;
+                    font-size: 14px;
+                    margin-bottom: 4px;
+                }}
+                .timeline-detail {{
+                    font-size: 12px;
+                    color: #666;
+                }}
+                .duration-badge {{
+                    display: inline-block;
+                    background: #F0F0F0;
+                    border-radius: 12px;
+                    padding: 2px 8px;
+                    font-size: 11px;
+                    margin-left: 8px;
+                    color: #666;
+                }}
+                .estimate-badge {{
+                    display: inline-block;
+                    background: #E3F2FD;
+                    border-radius: 12px;
+                    padding: 2px 8px;
+                    font-size: 11px;
+                    margin-left: 8px;
+                    color: #1976D2;
+                }}
+                .segment-card {{
+                    background: #F8F9FA;
+                    border-radius: 8px;
+                    padding: 10px;
+                    margin: 10px 0;
+                    border-left: 3px solid #4A90D9;
+                }}
+                .segment-title {{
+                    font-weight: bold;
+                    font-size: 13px;
+                    margin-bottom: 5px;
+                }}
+                .segment-info {{
+                    font-size: 12px;
+                    color: #666;
+                }}
+                .estimate-info {{
+                    font-size: 11px;
+                    color: #1976D2;
+                    margin-top: 5px;
+                }}
+            </style>
+            <div class="timeline-container">
+                <div class="timeline-title">📦 物流节点时间分析</div>
+                
+                <div class="summary-cards">
+                    <div class="summary-card blue">
+                        <div class="value">{analysis['total_nodes']}</div>
+                        <div class="label">物流节点</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="value">{analysis['summary']['total_transit_hours']:.1f}h</div>
+                        <div class="label">运输时间</div>
+                    </div>
+                    <div class="summary-card green">
+                        <div class="value">{analysis['summary']['total_dwell_hours']:.1f}h</div>
+                        <div class="label">停留时间</div>
+                    </div>
+                    <div class="summary-card orange">
+                        <div class="value">{len(analysis['summary']['cities_visited'])}</div>
+                        <div class="label">途经城市</div>
+                    </div>
+                </div>
+        """
+        
+        # 添加预估信息
+        if analysis['estimations']['final_estimate']:
+            est = analysis['estimations']['final_estimate']
+            html += f"""
+                <div class="segment-card" style="border-left-color: #FF9800;">
+                    <div class="segment-title">🎯 预计剩余时间</div>
+                    <div class="segment-info">{est['note']}</div>
+                </div>
+            """
+        
+        # 添加时间轴
+        nodes = self.extract_nodes_from_track(express_data.get('data', []))
+        html += '<div class="timeline">'
+        
+        for i, node in enumerate(nodes):
+            node_class = 'timeline-node'
+            if node['action_type'] == 'pickup':
+                node_class += ' pickup'
+            elif node['action_type'] == 'signed':
+                node_class += ' signed'
+            elif node['node_type'] == 'transit_center':
+                node_class += ' transit'
+                
+            # 计算到下一个节点的时间
+            duration_text = ""
+            if i < len(nodes) - 1:
+                delta = (nodes[i+1]['time'] - node['time']).total_seconds() / 3600
+                if delta >= 0.5:
+                    duration_text = f'<span class="duration-badge">⏱️ {delta:.1f}小时</span>'
+                    
+            html += f"""
+                <div class="{node_class}">
+                    <div class="timeline-time">{node['time_str']} {duration_text}</div>
+                    <div class="timeline-title-text">
+                        {self._get_node_icon(node['action_type'])} {node['context'][:50]}
+                    </div>
+                    <div class="timeline-detail">
+                        {'📍 ' + node['city'] if node['city'] else ''}
+                        {' | ' + node['node_type'] if node['node_type'] != 'unknown' else ''}
+                    </div>
+                </div>
+            """
+            
+        html += '</div></div></div>'
+        
+        return html
+    
+    def _get_node_icon(self, action_type: str) -> str:
+        """获取节点图标"""
+        icons = {
+            'pickup': '📮',
+            'depart': '🚚',
+            'arrive': '📍',
+            'delivering': '🚴',
+            'signed': '✅',
+            'status': '📋'
+        }
+        return icons.get(action_type, '📍')
+    
+    def get_detailed_analysis_text(self, express_data: Dict) -> str:
+        """获取详细分析文本（用于显示）- 增强版"""
+        analysis = self.analyze_and_estimate(express_data)
+        
+        if 'error' in analysis:
+            return analysis['error']
+            
+        text = f"""
+╔══════════════════════════════════════════════════════════════╗
+║                     物流节点时间分析报告（增强版）
+╠══════════════════════════════════════════════════════════════╣
+║ 快递单号: {analysis['tracking_number']}
+║ 快递公司: {analysis['company_code']}
+║ 物流状态: {'✅ 已签收' if analysis['is_signed'] else '🚚 运输中'}
+╠══════════════════════════════════════════════════════════════╣
+║ 统计摘要:
+║   • 物流节点数: {analysis['total_nodes']}
+║   • 途经站点数: {len(analysis['summary']['sites_visited'])}
+║   • 累计运输时间: {analysis['summary']['total_transit_hours']:.1f} 小时
+║   • 累计停留时间: {analysis['summary']['total_dwell_hours']:.1f} 小时
+"""
+
+        # 添加快递员/揽收员信息
+        if analysis['courier_info'] and analysis['courier_info'].get('name'):
+            text += f"║   • 揽收员: {analysis['courier_info']['name']}"
+            if analysis['courier_info'].get('phone'):
+                text += f" ({analysis['courier_info']['phone']})"
+            text += "\n"
+        
+        text += "╠══════════════════════════════════════════════════════════════╣\n"
+        text += "║ 站点时间轴:\n"
+        
+        # 添加站点时间轴
+        for site in analysis['site_timeline']:
+            marker = "📍" if site.get('is_current') else "  "
+            text += f"║ {marker} {site['site']}\n"
+            text += f"║     到达: {site['arrive_time']}\n"
+            if site['depart_time']:
+                text += f"║     离开: {site['depart_time']}\n"
+            text += f"║     停留: {site['duration_hours']:.1f} 小时\n"
+            text += "║     ─────────────────────────────────\n"
+        
+        # 添加后续站点预估
+        if analysis['estimations']['next_stations']:
+            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            text += "║ 🎯 后续站点到达预估 (基于历史数据):\n"
+            for est in analysis['estimations']['next_stations']:
+                text += f"║   • {est['description']} (置信度: {est['confidence_level']})\n"
+            
+        text += "╚══════════════════════════════════════════════════════════════╝"
+        
+        return text
+
 
 class DeliveryTimeEstimator:
     """送达时间预估器 - 基于历史数据"""
@@ -808,7 +1955,7 @@ class DeliveryTimeEstimator:
         
     def is_arrived_at_station(self, context: str) -> bool:
         """判断是否已到达驿站/代收点"""
-        驿站_keywords = [
+        station_keywords = [
             '驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站', 
             '兔喜', '超市', '代理点', '自提', '代收', '投柜', '出柜',
             '存局', '已送达', '便利店', '物业', '门卫', '快递点', '菜鸟驿站',
@@ -817,7 +1964,7 @@ class DeliveryTimeEstimator:
             '蜂巢', 'e栈', '收件宝', '近邻宝', '格格货栈', '乐收'
         ]
         context_lower = context.lower()
-        for keyword in 驿站_keywords:
+        for keyword in station_keywords:
             if keyword in context_lower or keyword in context:
                 return True
         return False
@@ -862,7 +2009,7 @@ class DeliveryTimeEstimator:
             time_str = track.get('time', '')
             
             # 找揽收
-            if not pickup_time and ('揽收' in context or '已揽件' in context or '收件' in context):
+            if not pickup_time and ('揽收' in context or '已揽件' in context or '收件' in context or '取件' in context):
                 pickup_time = time_str
                 origin_city = self.extract_city(context)
                 
@@ -1009,6 +2156,7 @@ class DeliveryTimeEstimator:
                 
         return "暂无预估信息"
 
+
 class ApiAccountManager:
     """API账号管理器"""
     
@@ -1037,7 +2185,6 @@ class ApiAccountManager:
                 """
                 self.db_manager.execute_update(reset_sql, (account['id'],))
         
-        # ========== 重要修改：不要在这里调用 load_accounts()，避免重置 current_account ==========
         # 只更新 accounts 列表中的数据，不改变 current_account
         self._refresh_accounts_list()
 
@@ -1584,7 +2731,7 @@ class ApiAccountDialog(QDialog):
         
         self.load_accounts()
         
-        # ========== 修复：通过 QApplication 查找主窗口 ==========
+        # 通过 QApplication 查找主窗口
         from PySide6.QtWidgets import QApplication
         
         main_window = None
@@ -1600,7 +2747,6 @@ class ApiAccountDialog(QDialog):
             main_window.load_current_api_account()
             # 更新显示
             main_window.update_api_account_display()
-        # ========================================
         
         QMessageBox.information(self, "成功", f"已将 '{account['account_name']}' 设为当前使用账号，界面已更新")
         
@@ -1897,6 +3043,7 @@ class ApiAccountDialog(QDialog):
         
         event.accept()
 
+
 class ApiAccountEditDialog(QDialog):
     """API账号编辑对话框"""
     
@@ -2034,6 +3181,7 @@ class ApiAccountEditDialog(QDialog):
             ))
             
         self.accept()
+
 
 class UserManagerPro:
     """用户管理器"""
@@ -2249,6 +3397,38 @@ class UserManagerPro:
         """
         db_manager.execute_update(delivery_history_sql)
         
+        # 节点历史表
+        node_transit_history_sql = """
+        CREATE TABLE IF NOT EXISTS node_transit_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_code TEXT NOT NULL,
+            from_city TEXT,
+            to_city TEXT,
+            from_site TEXT,
+            to_site TEXT,
+            node_type TEXT,
+            action_type TEXT,
+            avg_hours REAL,
+            sample_count INTEGER DEFAULT 1,
+            min_hours REAL,
+            max_hours REAL,
+            route_key TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(company_code, from_city, to_city, from_site, to_site, node_type, action_type)
+        )
+        """
+        db_manager.execute_update(node_transit_history_sql)
+        
+        try:
+            db_manager.execute_update("ALTER TABLE node_transit_history ADD COLUMN from_site TEXT")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE node_transit_history ADD COLUMN to_site TEXT")
+        except:
+            pass
+        
         index_sqls = [
             "CREATE INDEX IF NOT EXISTS idx_tracking_number ON express_query_history(tracking_number)",
             "CREATE INDEX IF NOT EXISTS idx_query_time ON express_query_history(query_time)",
@@ -2257,7 +3437,11 @@ class UserManagerPro:
             "CREATE INDEX IF NOT EXISTS idx_summary_category ON express_summary(status_category)",
             "CREATE INDEX IF NOT EXISTS idx_summary_update ON express_summary(last_update)",
             "CREATE INDEX IF NOT EXISTS idx_route_key ON delivery_history(route_key)",
-            "CREATE INDEX IF NOT EXISTS idx_dh_company_code ON delivery_history(company_code)"
+            "CREATE INDEX IF NOT EXISTS idx_dh_company_code ON delivery_history(company_code)",
+            "CREATE INDEX IF NOT EXISTS idx_node_route ON node_transit_history(route_key)",
+            "CREATE INDEX IF NOT EXISTS idx_node_company ON node_transit_history(company_code)",
+            "CREATE INDEX IF NOT EXISTS idx_node_from_site ON node_transit_history(from_site)",
+            "CREATE INDEX IF NOT EXISTS idx_node_to_site ON node_transit_history(to_site)"
         ]
         for sql in index_sqls:
             db_manager.execute_update(sql)
@@ -2309,6 +3493,7 @@ class UserManagerPro:
             sql, 
             (tracking_number, company_code, company_name, status, result_data, quota_remaining)
         )
+
 
 class BackupManagerPro:
     """数据库备份管理器"""
@@ -2501,6 +3686,7 @@ class BackupManagerPro:
                 print(f"删除备份失败: {e}")
             return False
 
+
 class ExpressQueryThreadPro(QThread):
     """快递查询线程"""
     finished = Signal(dict)
@@ -2552,7 +3738,6 @@ class ExpressQueryThreadPro(QThread):
             
             self.progress.emit(100)
             
-            # ========== 修改成功判断逻辑 ==========
             # 快递100 API 返回的状态码说明：
             # 200: 查询成功，有物流轨迹
             # 0: 查询成功，但暂无物流信息（未揽件）
@@ -2613,7 +3798,6 @@ class ExpressQueryThreadPro(QThread):
                     'error': error_msg,
                     'quota_info': quota_info
                 })
-            # ========== 修改结束 ==========
             
         except Exception as e:
             self.finished.emit({'success': False, 'error': str(e)})
@@ -2656,6 +3840,7 @@ class ExpressQueryThreadPro(QThread):
             quota_info['remaining'] = 99
             
         return quota_info
+
 
 class BatchRefreshThread(QThread):
     """批量刷新快递状态线程"""
@@ -2718,6 +3903,7 @@ class BatchRefreshThread(QThread):
         self.progress.emit(100, "刷新完成")
         self.finished.emit(success_results, failed_items)
 
+
 class BackupWorkerPro(QThread):
     """备份工作线程"""
     finished = Signal(bool, str)
@@ -2741,6 +3927,7 @@ class BackupWorkerPro(QThread):
         except Exception as e:
             self.finished.emit(False, f"备份失败: {e}")
 
+
 class RestoreWorkerPro(QThread):
     """恢复工作线程"""
     finished = Signal(bool, str)
@@ -2763,6 +3950,7 @@ class RestoreWorkerPro(QThread):
             self.finished.emit(success, message)
         except Exception as e:
             self.finished.emit(False, f"恢复失败: {e}")
+
 
 class ImageViewerDialog(QDialog):
     """图片查看器对话框"""
@@ -2812,6 +4000,7 @@ class ImageViewerDialog(QDialog):
         
         layout.addLayout(btn_layout)
         self.setLayout(layout)
+
 
 class ExpressItemWidget(QWidget):
     """快递条目组件"""
@@ -3718,6 +4907,7 @@ class ExpressItemWidget(QWidget):
         if reply == QMessageBox.Yes:
             self.delete_requested.emit(self.express_id)
 
+
 class RemarkEditDialog(QDialog):
     """备注编辑对话框"""
     
@@ -3782,6 +4972,7 @@ class RemarkEditDialog(QDialog):
         """获取备注"""
         return self.remark_edit.toPlainText().strip()
 
+
 class ExpressDetailDialog(QDialog):
     """快递详情对话框"""
     
@@ -3793,6 +4984,9 @@ class ExpressDetailDialog(QDialog):
         self.express_data = None
         self.query_thread = None
         self.estimator = DeliveryTimeEstimator(parent_gui.current_user_db) if parent_gui and parent_gui.current_user_db else None
+        self.node_analyzer = None
+        if parent_gui and hasattr(parent_gui, 'node_analyzer'):
+            self.node_analyzer = parent_gui.node_analyzer
         self.init_ui()
         self.load_data()
         self.setStyleSheet(MacaronStyle.get_main_style())
@@ -3800,15 +4994,22 @@ class ExpressDetailDialog(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle(f"{ProjectInfo.NAME} - 快递详情 - {self.tracking_num}")
-        self.setMinimumSize(750, 550)
+        self.setMinimumSize(800, 700)
         
         layout = QVBoxLayout()
         layout.setSpacing(10)
         
+        # 使用QTabWidget来组织内容
+        self.detail_tab_widget = QTabWidget()
+        
+        # 基本信息标签页
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        
         self.info_group = QGroupBox("基本信息")
         self.info_layout = QGridLayout()
         self.info_group.setLayout(self.info_layout)
-        layout.addWidget(self.info_group)
+        info_layout.addWidget(self.info_group)
         
         self.remark_group = QGroupBox("备注")
         self.remark_layout = QVBoxLayout()
@@ -3816,15 +5017,63 @@ class ExpressDetailDialog(QDialog):
         self.remark_label.setWordWrap(True)
         self.remark_layout.addWidget(self.remark_label)
         self.remark_group.setLayout(self.remark_layout)
-        layout.addWidget(self.remark_group)
+        info_layout.addWidget(self.remark_group)
         
-        self.track_group = QGroupBox("物流轨迹")
-        self.track_layout = QVBoxLayout()
+        self.detail_tab_widget.addTab(info_widget, "📋 基本信息")
+        
+        # 物流轨迹标签页
+        track_widget = QWidget()
+        track_layout = QVBoxLayout(track_widget)
         self.track_text = QTextEdit()
         self.track_text.setReadOnly(True)
-        self.track_layout.addWidget(self.track_text)
-        self.track_group.setLayout(self.track_layout)
-        layout.addWidget(self.track_group)
+        track_layout.addWidget(self.track_text)
+        self.detail_tab_widget.addTab(track_widget, "📜 物流轨迹")
+        
+        # 站点时间轴标签页（新增）
+        site_timeline_widget = QWidget()
+        site_timeline_layout = QVBoxLayout(site_timeline_widget)
+        
+        # 分割为上下两部分：站点时间轴 + 预估信息
+        splitter = QSplitter(Qt.Vertical)
+        
+        # 站点时间轴表格
+        self.site_table = QTableWidget()
+        self.site_table.setColumnCount(5)
+        self.site_table.setHorizontalHeaderLabels(["站点名称", "到达时间", "离开时间", "停留时长", "状态"])
+        self.site_table.horizontalHeader().setStretchLastSection(True)
+        self.site_table.setAlternatingRowColors(True)
+        self.site_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        splitter.addWidget(self.site_table)
+        
+        # 预估信息区域
+        estimate_widget = QWidget()
+        estimate_layout = QVBoxLayout(estimate_widget)
+        
+        estimate_title = QLabel("🎯 后续站点预估（基于历史数据）")
+        estimate_title.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
+        estimate_layout.addWidget(estimate_title)
+        
+        self.estimate_text = QTextEdit()
+        self.estimate_text.setReadOnly(True)
+        self.estimate_text.setMaximumHeight(150)
+        estimate_layout.addWidget(self.estimate_text)
+        
+        splitter.addWidget(estimate_widget)
+        splitter.setSizes([400, 150])
+        
+        site_timeline_layout.addWidget(splitter)
+        self.detail_tab_widget.addTab(site_timeline_widget, "📍 站点时间轴")
+        
+        # 节点时间分析标签页
+        analysis_widget = QWidget()
+        analysis_layout = QVBoxLayout(analysis_widget)
+        self.analysis_text = QTextEdit()
+        self.analysis_text.setReadOnly(True)
+        self.analysis_text.setFont(QFont("Consolas", 10))
+        analysis_layout.addWidget(self.analysis_text)
+        self.detail_tab_widget.addTab(analysis_widget, "📊 详细分析")
+        
+        layout.addWidget(self.detail_tab_widget)
         
         btn_layout = QHBoxLayout()
         
@@ -4043,6 +5292,89 @@ class ExpressDetailDialog(QDialog):
                 self.track_text.setText(f"无法解析物流数据: {e}")
         else:
             self.track_text.setText("暂无物流数据")
+        
+        # 更新站点时间轴
+        self.update_site_timeline(full_data)
+        
+        # 更新节点时间分析
+        if self.node_analyzer and full_data:
+            try:
+                analysis_text = self.node_analyzer.get_detailed_analysis_text(full_data)
+                self.analysis_text.setText(analysis_text)
+            except Exception as e:
+                self.analysis_text.setText(f"分析失败: {e}")
+        elif self.node_analyzer and result_data:
+            try:
+                full_data = json.loads(result_data)
+                analysis_text = self.node_analyzer.get_detailed_analysis_text(full_data)
+                self.analysis_text.setText(analysis_text)
+            except Exception as e:
+                self.analysis_text.setText(f"分析失败: {e}")
+        else:
+            self.analysis_text.setText("暂无足够数据进行分析")
+    
+    def update_site_timeline(self, full_data: dict):
+        """更新站点时间轴"""
+        self.site_table.setRowCount(0)
+        self.estimate_text.clear()
+        
+        if not full_data or not self.node_analyzer:
+            return
+        
+        try:
+            # 获取站点时间轴分析
+            site_analysis = self.node_analyzer.get_site_timeline_analysis(full_data)
+            
+            if 'error' in site_analysis:
+                return
+            
+            site_timeline = site_analysis.get('site_timeline', [])
+            courier_info = site_analysis.get('courier_info', {})
+            
+            self.site_table.setRowCount(len(site_timeline))
+            
+            for row, site in enumerate(site_timeline):
+                site_name = site.get('site', '未知站点')
+                arr_time = site.get('arrive_time', '')
+                dep_time = site.get('depart_time', '')
+                duration = f"{site.get('duration_hours', 0):.1f} 小时"
+                status = "📍 当前位置" if site.get('is_current') else ""
+                
+                self.site_table.setItem(row, 0, QTableWidgetItem(site_name))
+                self.site_table.setItem(row, 1, QTableWidgetItem(arr_time))
+                self.site_table.setItem(row, 2, QTableWidgetItem(dep_time or '--'))
+                self.site_table.setItem(row, 3, QTableWidgetItem(duration))
+                
+                status_item = QTableWidgetItem(status)
+                if site.get('is_current'):
+                    status_item.setForeground(QColor(0, 150, 0))
+                    status_item.setFont(QFont("", -1, QFont.Bold))
+                self.site_table.setItem(row, 4, status_item)
+            
+            self.site_table.resizeColumnsToContents()
+            
+            # 显示揽收员信息
+            if courier_info and courier_info.get('name'):
+                info_text = f"📮 揽收员: {courier_info['name']}"
+                if courier_info.get('phone'):
+                    info_text += f" (电话: {courier_info['phone']})"
+                self.estimate_text.append(info_text)
+                self.estimate_text.append("")
+            
+            # 获取并显示后续站点预估
+            next_estimates = self.node_analyzer.estimate_next_stations(full_data)
+            
+            if next_estimates:
+                self.estimate_text.append("🎯 基于历史数据的后续站点预估:")
+                for est in next_estimates:
+                    confidence_icon = "🟢" if est['confidence_level'] == '高' else ("🟡" if est['confidence_level'] == '中' else "🔴")
+                    self.estimate_text.append(f"  {confidence_icon} {est['description']} (置信度: {est['confidence_level']}, 样本: {est['confidence']})")
+            else:
+                self.estimate_text.append("暂无后续站点预估数据")
+                
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"更新站点时间轴失败: {e}")
 
     def closeEvent(self, event):
         """关闭事件 - 清理线程"""
@@ -4050,6 +5382,7 @@ class ExpressDetailDialog(QDialog):
             self.query_thread.quit()
             self.query_thread.wait()
         event.accept()
+
 
 class ExpressCategoryWidget(QWidget):
     """快递分类组件"""
@@ -4195,6 +5528,7 @@ class ExpressCategoryWidget(QWidget):
     def update_count(self):
         """更新计数"""
         self.count_label.setText(f"({len(self.express_items)})")
+
 
 class UserLoginDialogPro(QDialog):
     """用户登录对话框"""
@@ -4392,6 +5726,7 @@ class UserLoginDialogPro(QDialog):
         self.selected_user_id = current_item.data(Qt.UserRole)
         self.accept()
 
+
 class BackupRestoreDialogPro(QDialog):
     """备份恢复对话框"""
     
@@ -4528,8 +5863,8 @@ class BackupRestoreDialogPro(QDialog):
         start_date = self.date_start.date().toPython()
         end_date = self.date_end.date().toPython()
         # 将 date 转换为 datetime
-        start_date = datetime.combine(start_date, time(0, 0, 0))
-        end_date = datetime.combine(end_date, time(23, 59, 59))
+        start_date = datetime.combine(start_date, datetime.min.time())
+        end_date = datetime.combine(end_date, datetime.max.time())
         
         type_filter = self.type_filter.currentText()
         type_map = {
@@ -4739,6 +6074,7 @@ class BackupRestoreDialogPro(QDialog):
             self.backup_manager.set_max_backups(dialog.get_max_backups())
             self.load_backups()
 
+
 class BackupSettingsDialogPro(QDialog):
     """备份设置对话框"""
     
@@ -4823,6 +6159,975 @@ class BackupSettingsDialogPro(QDialog):
         """获取最大备份数量"""
         return self.max_spin.value()
 
+class CropImageDialog(QDialog):
+    """图片裁剪对话框"""
+    
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self.original_pixmap = pixmap
+        self.cropped_pixmap = None
+        self.selection_rect = None
+        self.is_selecting = False
+        self.start_pos = None
+        self.init_ui()
+        
+    def init_ui(self):
+        self.setWindowTitle("裁剪图片")
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        hint_label = QLabel("按住鼠标左键拖动选择裁剪区域，松开完成选择")
+        hint_label.setStyleSheet("color: #666; padding: 5px;")
+        layout.addWidget(hint_label)
+        
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("border: 1px solid #ccc; background-color: #f5f5f5;")
+        
+        self.scaled_pixmap = self.original_pixmap.scaled(
+            600, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.scale_factor = self.scaled_pixmap.width() / self.original_pixmap.width()
+        
+        self.image_label.setPixmap(self.scaled_pixmap)
+        
+        self.image_label.setMouseTracking(True)
+        self.image_label.mousePressEvent = self.mouse_press_event
+        self.image_label.mouseMoveEvent = self.mouse_move_event
+        self.image_label.mouseReleaseEvent = self.mouse_release_event
+        self.image_label.paintEvent = self.paint_event
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.image_label)
+        scroll_area.setWidgetResizable(False)
+        scroll_area.setAlignment(Qt.AlignCenter)
+        layout.addWidget(scroll_area)
+        
+        self.info_label = QLabel("未选择区域")
+        self.info_label.setStyleSheet("padding: 5px;")
+        layout.addWidget(self.info_label)
+        
+        btn_layout = QHBoxLayout()
+        
+        self.reset_btn = QPushButton("重置选择")
+        self.reset_btn.clicked.connect(self.reset_selection)
+        btn_layout.addWidget(self.reset_btn)
+        
+        btn_layout.addStretch()
+        
+        self.ok_btn = QPushButton("确认裁剪")
+        self.ok_btn.clicked.connect(self.accept_crop)
+        self.ok_btn.setEnabled(False)
+        btn_layout.addWidget(self.ok_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+    def mouse_press_event(self, event):
+        """鼠标按下事件"""
+        if event.button() == Qt.LeftButton:
+            self.start_pos = event.pos()
+            self.is_selecting = True
+            self.selection_rect = None
+            
+    def mouse_move_event(self, event):
+        """鼠标移动事件"""
+        if self.is_selecting and self.start_pos:
+            end_pos = event.pos()
+            x = min(self.start_pos.x(), end_pos.x())
+            y = min(self.start_pos.y(), end_pos.y())
+            w = abs(self.start_pos.x() - end_pos.x())
+            h = abs(self.start_pos.y() - end_pos.y())
+            
+            x = max(0, min(x, self.scaled_pixmap.width() - 1))
+            y = max(0, min(y, self.scaled_pixmap.height() - 1))
+            w = min(w, self.scaled_pixmap.width() - x)
+            h = min(h, self.scaled_pixmap.height() - y)
+            
+            if w > 5 and h > 5:
+                self.selection_rect = QRect(x, y, w, h)
+                self.info_label.setText(f"选择区域: {w} x {h} 像素")
+            
+            self.image_label.update()
+            
+    def mouse_release_event(self, event):
+        """鼠标释放事件"""
+        if event.button() == Qt.LeftButton and self.is_selecting:
+            self.is_selecting = False
+            if self.selection_rect and self.selection_rect.width() > 10 and self.selection_rect.height() > 10:
+                self.ok_btn.setEnabled(True)
+            else:
+                self.selection_rect = None
+                self.info_label.setText("未选择区域（请拖动选择有效区域）")
+            self.image_label.update()
+            
+    def paint_event(self, event):
+        """绘制事件 - 绘制选择框"""
+        QLabel.paintEvent(self.image_label, event)
+        
+        if self.selection_rect:
+            painter = QPainter(self.image_label)
+            painter.setPen(QPen(QColor(0, 120, 215), 2, Qt.DashLine))
+            painter.drawRect(self.selection_rect)
+            
+            painter.setBrush(QColor(0, 120, 215, 30))
+            painter.drawRect(self.selection_rect)
+            
+    def reset_selection(self):
+        """重置选择"""
+        self.selection_rect = None
+        self.ok_btn.setEnabled(False)
+        self.info_label.setText("未选择区域")
+        self.image_label.update()
+        
+    def accept_crop(self):
+        """确认裁剪"""
+        if not self.selection_rect:
+            return
+            
+        scale = 1.0 / self.scale_factor
+        orig_x = int(self.selection_rect.x() * scale)
+        orig_y = int(self.selection_rect.y() * scale)
+        orig_w = int(self.selection_rect.width() * scale)
+        orig_h = int(self.selection_rect.height() * scale)
+        
+        self.cropped_pixmap = self.original_pixmap.copy(orig_x, orig_y, orig_w, orig_h)
+        self.accept()
+        
+    def get_cropped_image(self) -> QPixmap:
+        """获取裁剪后的图片"""
+        return self.cropped_pixmap
+
+
+class RebuildDeliveryWorker(QObject):
+    """重建时效历史数据的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            self.db_manager.execute_update("DELETE FROM delivery_history")
+            
+            estimator = DeliveryTimeEstimator(self.db_manager)
+            
+            success_count = 0
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        continue
+                    
+                    data = json.loads(result_data)
+                    
+                    track_list = data.get('data', [])
+                    if len(track_list) < 2:
+                        continue
+                    
+                    state = str(data.get('state', ''))
+                    last_context = track_list[-1].get('context', '') if track_list else ''
+                    is_signed = (state == '3') or estimator.is_signed(last_context)
+                    is_arrived = estimator.is_arrived_at_station(last_context)
+                    
+                    if not is_signed and not is_arrived:
+                        continue
+                    
+                    estimator.record_delivery(data)
+                    success_count += 1
+                    
+                except:
+                    continue
+                
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录，成功 {success_count} 条")
+            
+            verify_sql = "SELECT COUNT(*) as count FROM delivery_history"
+            verify_result = self.db_manager.execute_query(verify_sql)
+            final_count = verify_result[0]['count'] if verify_result else 0
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录，成功提取 {success_count} 条时效数据\n最终 delivery_history 表共有 {final_count} 条记录")
+            
+        except Exception as e:
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+
+class RebuildNodeWorker(QObject):
+    """重建节点运输历史数据的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            self.status.emit("正在验证表结构...")
+            check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='node_transit_history'"
+            result = self.db_manager.execute_query(check_sql)
+            if not result:
+                self.status.emit("表不存在，正在创建...")
+                analyzer = LogisticsNodeAnalyzer(self.db_manager)
+                analyzer.init_node_history_table()
+            
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            self.db_manager.execute_update("DELETE FROM node_transit_history")
+            
+            analyzer = LogisticsNodeAnalyzer(self.db_manager)
+            
+            success_count = 0
+            node_segments_count = 0
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        continue
+                    
+                    data = json.loads(result_data)
+                    
+                    track_list = data.get('data', [])
+                    if len(track_list) < 2:
+                        continue
+                    
+                    analyzer.record_node_transit(data)
+                    success_count += 1
+                    
+                    nodes = analyzer.extract_nodes_from_track(track_list)
+                    segments = analyzer.calculate_node_transit_times(nodes)
+                    node_segments_count += len(segments)
+                    
+                except:
+                    continue
+                
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录，成功 {success_count} 条，提取 {node_segments_count} 个节点段")
+            
+            verify_sql = "SELECT COUNT(*) as count FROM node_transit_history"
+            verify_result = self.db_manager.execute_query(verify_sql)
+            final_count = verify_result[0]['count'] if verify_result else 0
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录\n成功处理 {success_count} 条快递\n提取 {node_segments_count} 个节点段\n最终 node_transit_history 表共有 {final_count} 条记录")
+            
+        except Exception as e:
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+
+class RebuildAllWorker(QObject):
+    """全部重建（时效+节点）的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            self.db_manager.execute_update("DELETE FROM delivery_history")
+            self.db_manager.execute_update("DELETE FROM node_transit_history")
+            
+            estimator = DeliveryTimeEstimator(self.db_manager)
+            analyzer = LogisticsNodeAnalyzer(self.db_manager)
+            
+            delivery_count = 0
+            node_count = 0
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        continue
+                    
+                    data = json.loads(result_data)
+                    track_list = data.get('data', [])
+                    
+                    if len(track_list) >= 2:
+                        estimator.record_delivery(data)
+                        delivery_count += 1
+                        
+                        analyzer.record_node_transit(data)
+                        node_count += 1
+                        
+                except:
+                    continue
+                
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录 | 时效: {delivery_count} | 节点: {node_count}")
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录\n时效数据: {delivery_count} 条\n节点数据: {node_count} 条")
+            
+        except Exception as e:
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+
+class BatchImportDialog(QDialog):
+    """批量导入快递单号对话框"""
+    
+    def __init__(self, company_codes: dict, parent=None):
+        super().__init__(parent)
+        self.company_codes = company_codes
+        self.imported_numbers = []
+        self.init_ui()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+        
+    def init_ui(self):
+        self.setWindowTitle("批量导入快递单号")
+        self.setMinimumSize(700, 600)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        method_group = QGroupBox("导入方式")
+        method_layout = QVBoxLayout()
+        
+        self.method_combo = QComboBox()
+        self.method_combo.addItems(["从文件导入", "粘贴多行文本", "手动输入（每行一个）"])
+        self.method_combo.currentIndexChanged.connect(self.on_method_changed)
+        method_layout.addWidget(self.method_combo)
+        
+        method_group.setLayout(method_layout)
+        layout.addWidget(method_group)
+        
+        self.file_widget = QWidget()
+        file_layout = QVBoxLayout(self.file_widget)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        file_select_layout = QHBoxLayout()
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setPlaceholderText("选择包含快递单号的文件...")
+        self.file_path_edit.setReadOnly(True)
+        file_select_layout.addWidget(self.file_path_edit)
+        
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self.browse_file)
+        file_select_layout.addWidget(browse_btn)
+        
+        file_layout.addLayout(file_select_layout)
+        
+        file_tip = QLabel("支持格式：TXT、CSV、文本文件，每行一个快递单号")
+        file_tip.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px;")
+        file_layout.addWidget(file_tip)
+        
+        layout.addWidget(self.file_widget)
+        
+        self.text_widget = QWidget()
+        self.text_widget.setVisible(False)
+        text_layout = QVBoxLayout(self.text_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        
+        text_label = QLabel("请输入快递单号（每行一个，或使用分隔符分隔）：")
+        text_layout.addWidget(text_label)
+        
+        separator_layout = QHBoxLayout()
+        separator_layout.addWidget(QLabel("分隔符："))
+        
+        self.separator_combo = QComboBox()
+        self.separator_combo.addItems(["换行（默认）", "逗号 ,", "空格", "分号 ;", "制表符", "自定义..."])
+        self.separator_combo.currentIndexChanged.connect(self.on_separator_changed)
+        separator_layout.addWidget(self.separator_combo)
+        
+        self.custom_separator_edit = QLineEdit()
+        self.custom_separator_edit.setPlaceholderText("输入自定义分隔符")
+        self.custom_separator_edit.setMaximumWidth(100)
+        self.custom_separator_edit.setVisible(False)
+        separator_layout.addWidget(self.custom_separator_edit)
+        
+        separator_layout.addStretch()
+        text_layout.addLayout(separator_layout)
+        
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("例如：\nYT1234567890\nSF1234567890\nJD1234567890\n\n或使用逗号分隔：\nYT1234567890,SF1234567890,JD1234567890")
+        self.text_edit.setMinimumHeight(200)
+        text_layout.addWidget(self.text_edit)
+        
+        preview_btn = QPushButton("预览解析结果")
+        preview_btn.clicked.connect(self.preview_numbers)
+        text_layout.addWidget(preview_btn)
+        
+        layout.addWidget(self.text_widget)
+        
+        company_group = QGroupBox("快递公司设置")
+        company_layout = QHBoxLayout()
+        
+        company_layout.addWidget(QLabel("默认快递公司："))
+        
+        self.company_combo = QComboBox()
+        self.company_combo.addItems(list(self.company_codes.keys()))
+        self.company_combo.setCurrentText("自动识别")
+        company_layout.addWidget(self.company_combo)
+        
+        company_layout.addStretch()
+        
+        self.auto_detect_check = QCheckBox("启用自动识别（单号格式识别）")
+        self.auto_detect_check.setChecked(True)
+        self.auto_detect_check.setToolTip("根据单号格式自动识别快递公司，仅对支持的单号格式有效")
+        company_layout.addWidget(self.auto_detect_check)
+        
+        company_group.setLayout(company_layout)
+        layout.addWidget(company_group)
+        
+        preview_group = QGroupBox("待导入单号预览")
+        preview_layout = QVBoxLayout()
+        
+        self.preview_table = QTableWidget()
+        self.preview_table.setColumnCount(4)
+        self.preview_table.setHorizontalHeaderLabels(["序号", "快递单号", "快递公司", "状态"])
+        self.preview_table.horizontalHeader().setStretchLastSection(True)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        preview_layout.addWidget(self.preview_table)
+        
+        stats_layout = QHBoxLayout()
+        self.stats_label = QLabel("共 0 个单号")
+        stats_layout.addWidget(self.stats_label)
+        
+        self.valid_count_label = QLabel("有效：0")
+        stats_layout.addWidget(self.valid_count_label)
+        
+        self.duplicate_count_label = QLabel("重复：0")
+        stats_layout.addWidget(self.duplicate_count_label)
+        
+        stats_layout.addStretch()
+        preview_layout.addLayout(stats_layout)
+        
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+        
+        btn_layout = QHBoxLayout()
+        
+        self.parse_btn = QPushButton("解析单号")
+        self.parse_btn.clicked.connect(self.parse_numbers)
+        btn_layout.addWidget(self.parse_btn)
+        
+        self.clear_btn = QPushButton("清空")
+        self.clear_btn.clicked.connect(self.clear_all)
+        btn_layout.addWidget(self.clear_btn)
+        
+        btn_layout.addStretch()
+        
+        self.import_btn = QPushButton("开始导入")
+        self.import_btn.clicked.connect(self.accept)
+        self.import_btn.setEnabled(False)
+        self.import_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        btn_layout.addWidget(self.import_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+    def on_method_changed(self, index: int):
+        """切换导入方式"""
+        self.file_widget.setVisible(index == 0)
+        self.text_widget.setVisible(index != 0)
+        
+        if index == 1:
+            self.separator_combo.setCurrentText("换行（默认）")
+        elif index == 2:
+            self.separator_combo.setCurrentText("换行（默认）")
+            
+    def on_separator_changed(self, index: int):
+        """分隔符改变"""
+        self.custom_separator_edit.setVisible(index == 5)
+        
+    def browse_file(self):
+        """浏览文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择快递单号文件", "",
+            "文本文件 (*.txt *.csv *.log);;所有文件 (*.*)"
+        )
+        
+        if file_path:
+            self.file_path_edit.setText(file_path)
+            self.load_file_content(file_path)
+            
+    def load_file_content(self, file_path: str):
+        """加载文件内容"""
+        try:
+            encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'gb18030']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        content = f.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+                    
+            if content is None:
+                QMessageBox.warning(self, "错误", "无法识别文件编码，请确保文件为文本格式")
+                return
+                
+            self.method_combo.setCurrentIndex(1)
+            self.text_edit.setText(content)
+            
+            QTimer.singleShot(200, self.parse_numbers)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"读取文件失败：{e}")
+            
+    def get_separator(self) -> Optional[str]:
+        """获取当前分隔符"""
+        index = self.separator_combo.currentIndex()
+        separators = {
+            0: '\n',
+            1: ',',
+            2: ' ',
+            3: ';',
+            4: '\t',
+            5: self.custom_separator_edit.text()
+        }
+        return separators.get(index)
+        
+    def detect_company_by_number(self, tracking_num: str) -> str:
+        """根据单号格式自动识别快递公司"""
+        tracking_num = tracking_num.strip().upper()
+        
+        rules = [
+            (lambda n: n.startswith('SF') and len(n) >= 12, 'shunfeng'),
+            (lambda n: len(n) == 12 and n.isdigit(), 'shunfeng'),
+            (lambda n: n.startswith('YT') and len(n) >= 10, 'yuantong'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '23456', 'yuantong'),
+            (lambda n: n.startswith('ZT') and len(n) >= 10, 'zhongtong'),
+            (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '78', 'zhongtong'),
+            (lambda n: n.startswith('YD') and len(n) >= 10, 'yunda'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[0] in '145', 'yunda'),
+            (lambda n: n.startswith('ST') and len(n) >= 10, 'shentong'),
+            (lambda n: len(n) == 12 and n.isdigit() and n[0] in '378', 'shentong'),
+            (lambda n: n.startswith('JD'), 'jd'),
+            (lambda n: n.startswith('EMS'), 'ems'),
+            (lambda n: len(n) == 13 and n.isdigit() and n[:2] in ['98', '99', '10', '11', '12', '13', '14'], 'ems'),
+            (lambda n: n.startswith('JT') and len(n) >= 10, 'jtexpress'),
+        ]
+        
+        for check, code in rules:
+            try:
+                if check(tracking_num):
+                    return code
+            except:
+                continue
+                
+        return ""
+        
+    def get_company_name_by_code(self, code: str) -> str:
+        """根据代码获取公司名称"""
+        for name, c in self.company_codes.items():
+            if c == code:
+                return name
+        return "未知"
+        
+    def parse_numbers(self):
+        """解析单号"""
+        method = self.method_combo.currentIndex()
+        
+        if method == 0:
+            file_path = self.file_path_edit.text().strip()
+            if not file_path:
+                QMessageBox.warning(self, "提示", "请先选择文件")
+                return
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "提示", "文件不存在")
+                return
+            self.load_file_content(file_path)
+            return
+            
+        content = self.text_edit.toPlainText().strip()
+        if not content:
+            QMessageBox.warning(self, "提示", "请输入快递单号")
+            return
+            
+        separator = self.get_separator()
+        if not separator:
+            QMessageBox.warning(self, "提示", "请输入自定义分隔符")
+            return
+            
+        if separator == '\n':
+            lines = content.split('\n')
+            raw_items = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                raw_items.append(line)
+        else:
+            raw_items = [n.strip() for n in content.split(separator) if n.strip()]
+        
+        numbers = []
+        for item in raw_items:
+            cleaned = re.sub(r'[\s\u4e00-\u9fff]+', '', item)
+            if len(cleaned) >= 6:
+                numbers.append(cleaned)
+            else:
+                numbers.append(item.strip())
+        
+        seen = set()
+        unique_numbers = []
+        for num in numbers:
+            if num not in seen:
+                seen.add(num)
+                unique_numbers.append(num)
+                
+        default_company_name = self.company_combo.currentText()
+        default_company_code = self.company_codes.get(default_company_name, "")
+        auto_detect = self.auto_detect_check.isChecked()
+        
+        self.preview_table.setRowCount(len(unique_numbers))
+        
+        self.imported_numbers = []
+        valid_count = 0
+        duplicate_warning = len(numbers) - len(unique_numbers)
+        
+        for row, num in enumerate(unique_numbers):
+            self.preview_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+            self.preview_table.setItem(row, 1, QTableWidgetItem(num))
+            
+            company_code = ""
+            company_name = "自动识别"
+            status = "API自动"
+            status_color = QColor(100, 100, 100)
+            
+            if auto_detect:
+                detected_code = self.detect_company_by_number(num)
+                if detected_code:
+                    company_code = detected_code
+                    company_name = self.get_company_name_by_code(detected_code)
+                    status = "格式识别"
+                    status_color = QColor(0, 150, 0)
+                else:
+                    company_code = ""
+                    company_name = "自动识别"
+                    status = "API自动"
+                    status_color = QColor(100, 100, 100)
+            else:
+                company_code = default_company_code
+                company_name = default_company_name
+                status = "使用默认"
+                status_color = QColor(255, 165, 0)
+            
+            status_item = QTableWidgetItem(status)
+            status_item.setForeground(status_color)
+            
+            self.preview_table.setItem(row, 2, QTableWidgetItem(company_name))
+            self.preview_table.setItem(row, 3, status_item)
+            
+            self.imported_numbers.append({
+                'number': num,
+                'company_code': company_code,
+                'company_name': company_name
+            })
+            
+            valid_count += 1
+            
+        self.stats_label.setText(f"共 {len(unique_numbers)} 个单号")
+        self.valid_count_label.setText(f"有效：{valid_count}")
+        
+        if duplicate_warning > 0:
+            self.duplicate_count_label.setText(f"去重：{duplicate_warning}")
+        else:
+            self.duplicate_count_label.setText("无重复")
+            
+        self.import_btn.setEnabled(valid_count > 0)
+        self.preview_table.resizeColumnsToContents()
+        
+    def preview_numbers(self):
+        """预览解析结果"""
+        self.parse_numbers()
+        
+    def clear_all(self):
+        """清空所有"""
+        self.file_path_edit.clear()
+        self.text_edit.clear()
+        self.preview_table.setRowCount(0)
+        self.stats_label.setText("共 0 个单号")
+        self.valid_count_label.setText("有效：0")
+        self.duplicate_count_label.setText("去重：0")
+        self.imported_numbers = []
+        self.import_btn.setEnabled(False)
+        
+    def get_imported_numbers(self) -> List[Dict]:
+        """获取导入的单号列表"""
+        return self.imported_numbers
+
+
+class SettingsDialogPro(QDialog):
+    """设置对话框"""
+    
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.init_ui()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+        
+    def init_ui(self):
+        """初始化UI"""
+        self.setWindowTitle("系统设置")
+        self.setMinimumSize(500, 550)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        account_group = QGroupBox("API账号管理")
+        account_layout = QVBoxLayout()
+        
+        account_info_label = QLabel("管理多个API账号，支持额度用完自动切换")
+        account_layout.addWidget(account_info_label)
+        
+        manage_account_btn = QPushButton("管理API账号")
+        manage_account_btn.clicked.connect(self.manage_accounts)
+        account_layout.addWidget(manage_account_btn)
+        
+        account_group.setLayout(account_layout)
+        layout.addWidget(account_group)
+        
+        delivery_group = QGroupBox("时效数据管理")
+        delivery_layout = QVBoxLayout()
+        
+        delivery_info_label = QLabel("基于历史签收数据预估送达时间")
+        delivery_layout.addWidget(delivery_info_label)
+        
+        stats_layout = QHBoxLayout()
+        self.stats_label = QLabel("加载中...")
+        stats_layout.addWidget(self.stats_label)
+        stats_layout.addStretch()
+        delivery_layout.addLayout(stats_layout)
+        
+        clear_history_btn = QPushButton("清空时效历史数据")
+        clear_history_btn.clicked.connect(self.clear_delivery_history)
+        delivery_layout.addWidget(clear_history_btn)
+        
+        delivery_group.setLayout(delivery_layout)
+        layout.addWidget(delivery_group)
+        
+        node_group = QGroupBox("节点运输历史数据")
+        node_layout = QVBoxLayout()
+        
+        node_info_label = QLabel("基于历史节点运输数据预估各路段耗时")
+        node_layout.addWidget(node_info_label)
+        
+        node_stats_layout = QHBoxLayout()
+        self.node_stats_label = QLabel("加载中...")
+        node_stats_layout.addWidget(self.node_stats_label)
+        node_stats_layout.addStretch()
+        node_layout.addLayout(node_stats_layout)
+        
+        clear_node_btn = QPushButton("清空节点历史数据")
+        clear_node_btn.clicked.connect(self.clear_node_history)
+        node_layout.addWidget(clear_node_btn)
+        
+        node_group.setLayout(node_layout)
+        layout.addWidget(node_group)
+        
+        backup_group = QGroupBox("备份设置")
+        backup_layout = QVBoxLayout()
+        
+        max_layout = QHBoxLayout()
+        max_layout.addWidget(QLabel("最大备份数量:"))
+        self.max_backups_spin = QSpinBox()
+        self.max_backups_spin.setRange(1, 100)
+        self.max_backups_spin.setValue(self.parent.backup_manager.max_backups)
+        max_layout.addWidget(self.max_backups_spin)
+        max_layout.addStretch()
+        backup_layout.addLayout(max_layout)
+        
+        self.auto_backup_check = QCheckBox("启用自动备份（每小时）")
+        self.auto_backup_check.setChecked(self.parent.backup_timer.isActive())
+        backup_layout.addWidget(self.auto_backup_check)
+        
+        dir_layout = QHBoxLayout()
+        dir_layout.addWidget(QLabel("备份目录:"))
+        self.dir_label = QLabel(str(self.parent.backup_manager.backup_dir))
+        dir_layout.addWidget(self.dir_label)
+        dir_layout.addStretch()
+        backup_layout.addLayout(dir_layout)
+        
+        backup_group.setLayout(backup_layout)
+        layout.addWidget(backup_group)
+        
+        debug_layout = QHBoxLayout()
+        self.debug_check = QCheckBox("启用调试模式")
+        self.debug_check.setChecked(DEBUG_MODE)
+        debug_layout.addWidget(self.debug_check)
+        debug_layout.addStretch()
+        layout.addLayout(debug_layout)
+        
+        layout.addStretch()
+        
+        btn_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("保存设置")
+        save_btn.clicked.connect(self.save_settings)
+        btn_layout.addWidget(save_btn)
+        
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        self.load_delivery_stats()
+        self.load_node_stats()
+        
+    def load_delivery_stats(self):
+        """加载时效统计"""
+        if self.parent.current_user_db:
+            sql = "SELECT COUNT(*) as count FROM delivery_history"
+            result = self.parent.current_user_db.execute_query(sql)
+            if result:
+                count = result[0]['count']
+                self.stats_label.setText(f"已记录 {count} 条时效数据")
+                
+    def load_node_stats(self):
+        """加载节点统计"""
+        if self.parent.current_user_db:
+            sql = "SELECT COUNT(*) as count FROM node_transit_history"
+            result = self.parent.current_user_db.execute_query(sql)
+            if result:
+                count = result[0]['count']
+                self.node_stats_label.setText(f"已记录 {count} 条节点运输数据")
+                
+    def clear_delivery_history(self):
+        """清空时效历史数据"""
+        reply = QMessageBox.question(
+            self, "确认清空",
+            "确定要清空所有时效历史数据吗？\n清空后预估功能将使用默认值。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.parent.current_user_db:
+                sql = "DELETE FROM delivery_history"
+                self.parent.current_user_db.execute_update(sql)
+                self.load_delivery_stats()
+                QMessageBox.information(self, "成功", "时效历史数据已清空")
+                
+    def clear_node_history(self):
+        """清空节点历史数据"""
+        reply = QMessageBox.question(
+            self, "确认清空",
+            "确定要清空所有节点运输历史数据吗？\n清空后节点时间预估将使用默认值。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.parent.current_user_db:
+                sql = "DELETE FROM node_transit_history"
+                self.parent.current_user_db.execute_update(sql)
+                self.load_node_stats()
+                QMessageBox.information(self, "成功", "节点历史数据已清空")
+        
+    def manage_accounts(self):
+        """管理API账号"""
+        if self.parent.current_user_db:
+            dialog = ApiAccountDialog(self.parent.current_user_db, self)
+            if dialog.exec() == QDialog.Accepted:
+                if self.parent.api_account_manager:
+                    self.parent.api_account_manager.load_accounts()
+                    self.parent.load_current_api_account()
+                    self.parent.update_api_account_display()
+        else:
+            QMessageBox.warning(self, "提示", "数据库未连接")
+            
+    def save_settings(self):
+        """保存设置"""
+        self.parent.backup_manager.set_max_backups(self.max_backups_spin.value())
+        self.parent.user_manager.save_user_setting("max_backups", str(self.max_backups_spin.value()))
+        
+        auto_backup = self.auto_backup_check.isChecked()
+        if auto_backup:
+            self.parent.backup_timer.start()
+        else:
+            self.parent.backup_timer.stop()
+        self.parent.user_manager.save_user_setting("auto_backup", str(auto_backup).lower())
+    
+        debug_mode = self.debug_check.isChecked()
+        self.parent.user_manager.save_user_setting("debug_mode", "1" if debug_mode else "0")
+        
+        global DEBUG_MODE
+        DEBUG_MODE = debug_mode
+        
+        QMessageBox.information(self, "成功", "设置已保存")
+
+
 class ExpressQueryProGUI(QMainWindow):
     """快递查询系统主窗口"""
     
@@ -4844,6 +7149,7 @@ class ExpressQueryProGUI(QMainWindow):
         
         self.api_account_manager = None
         self.delivery_estimator = None
+        self.node_analyzer = None
         
         self.company_codes = {
             "自动识别": "",
@@ -4941,6 +7247,7 @@ class ExpressQueryProGUI(QMainWindow):
                     self.current_user_db = user_db
                     self.api_account_manager = ApiAccountManager(self.current_user_db)
                     self.delivery_estimator = DeliveryTimeEstimator(self.current_user_db)
+                    self.node_analyzer = LogisticsNodeAnalyzer(self.current_user_db)
                     self.load_current_api_account()
                     return True
                 else:
@@ -4996,7 +7303,6 @@ class ExpressQueryProGUI(QMainWindow):
         
     def init_ui(self):
         """初始化UI"""
-        # 使用 ProjectInfo 设置窗口标题
         self.setWindowTitle(ProjectInfo.get_window_title(self.user_manager.current_user['username']))
         self.setGeometry(100, 100, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         
@@ -5032,26 +7338,50 @@ class ExpressQueryProGUI(QMainWindow):
         
         main_layout.addWidget(self.main_tab_widget)
         
+        # ========== 状态栏设置 ==========
         self.status_bar = QStatusBar()
+        self.status_bar.setMinimumHeight(30)  # 增加状态栏高度
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
         
+        # ========== 全局进度条 - 加粗版 ==========
         self.global_progress = QProgressBar()
-        self.global_progress.setMaximumHeight(3)
-        self.global_progress.setTextVisible(False)
+        self.global_progress.setMinimumHeight(22)  # 最小高度22px
+        self.global_progress.setMaximumHeight(26)  # 最大高度26px
+        self.global_progress.setMinimumWidth(250)  # 最小宽度
+        self.global_progress.setTextVisible(True)  # 显示文字
+        self.global_progress.setFormat("%p%")      # 显示百分比
+        self.global_progress.setStyleSheet(f"""
+            QProgressBar {{
+                border: 2px solid {MacaronColors.BORDER_MEDIUM.name()};
+                border-radius: 6px;
+                background-color: #E8E8E8;
+                text-align: center;
+                color: {MacaronColors.TEXT_DARK.name()};
+                font-weight: bold;
+                font-size: 11px;
+                padding: 0px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {MacaronColors.GREEN_APPLE.name()},
+                    stop:0.4 {MacaronColors.BLUE_SKY.name()},
+                    stop:1 {MacaronColors.ORANGE_PEACH.name()});
+                border-radius: 4px;
+                margin: 2px;
+            }}
+        """)
         self.status_bar.addPermanentWidget(self.global_progress)
         self.global_progress.setVisible(False)
-    
+        
         # 设置全局快捷键
-        # Ctrl+F - 聚焦到搜索框
         search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         search_shortcut.activated.connect(self.focus_global_search)
         
-        # Ctrl+1-5 - 切换标签页
         for i in range(1, 6):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             shortcut.activated.connect(lambda idx=i-1: self.main_tab_widget.setCurrentIndex(idx))
-    
+
         if not self.load_current_api_account():
             QTimer.singleShot(500, self.check_api_accounts)
 
@@ -5088,7 +7418,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.global_search.selectAll()
 
     def create_toolbar(self, parent_layout):
-        """创建工具栏"""
+        """创建工具栏 - 添加醒目的进度条"""
         toolbar_widget = QWidget()
         toolbar_layout = QHBoxLayout(toolbar_widget)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
@@ -5108,9 +7438,34 @@ class ExpressQueryProGUI(QMainWindow):
         self.api_account_label = QLabel()
         self.api_account_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
         toolbar_layout.addWidget(self.api_account_label)
-        self.update_api_account_display()  # 初始化显示
+        self.update_api_account_display()
         
         toolbar_layout.addStretch()
+
+        # ========== 增强的工具栏进度条 ==========
+        self.toolbar_progress = QProgressBar()
+        self.toolbar_progress.setMaximumWidth(250)
+        self.toolbar_progress.setMinimumHeight(20)
+        self.toolbar_progress.setVisible(False)
+        self.toolbar_progress.setStyleSheet(f"""
+            QProgressBar {{
+                border: 2px solid {MacaronColors.BORDER_MEDIUM.name()};
+                border-radius: 5px;
+                background-color: #F0F0F0;
+                text-align: center;
+                font-weight: bold;
+                color: {MacaronColors.TEXT_DARK.name()};
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {MacaronColors.GREEN_APPLE.name()},
+                    stop:0.5 {MacaronColors.BLUE_SKY.name()},
+                    stop:1 {MacaronColors.ORANGE_PEACH.name()});
+                border-radius: 3px;
+                margin: 1px;
+            }}
+        """)
+        toolbar_layout.addWidget(self.toolbar_progress)
         
         search_label = QLabel("🔎 全局搜索:")
         toolbar_layout.addWidget(search_label)
@@ -5201,6 +7556,20 @@ class ExpressQueryProGUI(QMainWindow):
         """)
         toolbar.addWidget(batch_import_btn)
         
+        # 添加批量导出按钮
+        batch_export_btn = QPushButton("📋 批量导出单号")
+        batch_export_btn.setToolTip("批量导出选中的快递单号")
+        batch_export_btn.clicked.connect(self.batch_export_numbers)
+        batch_export_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.ORANGE_PEACH.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.ORANGE_APRICOT.name()};
+            }}
+        """)
+        toolbar.addWidget(batch_export_btn)
+        
         toolbar.addStretch()
         
         refresh_all_btn = QPushButton("🔄 刷新全部")
@@ -5233,13 +7602,13 @@ class ExpressQueryProGUI(QMainWindow):
             ('arrived', '📍 已到驿站'),
             ('delivering', '🚚 派件中'),
             ('transit', '✈️ 在途中'),
+            ('picked', '📮 已揽收'),
+            ('pending', '⏳ 待揽件'),
+            ('signed', '✅ 已签收'),
             ('problem', '⚠️ 疑难件'),
             ('returned', '↩️ 退件'),
             ('customs', '🛃 清关中'),
-            ('other', '📦 其他'),
-            ('picked', '📮 已揽收'),
-            ('pending', '⏳ 待揽件'),
-            ('signed', '✅ 已签收')
+            ('other', '📦 其他')
         ]
         
         for key, name in categories:
@@ -5457,6 +7826,30 @@ class ExpressQueryProGUI(QMainWindow):
         
         layout.addLayout(refresh_layout)
         
+    def create_info_card(self, title: str, value: str, unit: str) -> QGroupBox:
+        """创建信息卡片"""
+        card = QGroupBox(title)
+        layout = QVBoxLayout()
+        
+        value_label = QLabel(value)
+        value_font = QFont()
+        value_font.setPointSize(16)
+        value_font.setBold(True)
+        value_label.setFont(value_font)
+        value_label.setAlignment(Qt.AlignCenter)
+        
+        unit_label = QLabel(unit)
+        unit_label.setAlignment(Qt.AlignCenter)
+        
+        layout.addWidget(value_label)
+        layout.addWidget(unit_label)
+        card.setLayout(layout)
+        
+        card.value_label = value_label
+        
+        return card
+
+
     def setup_database_tab(self):
         """设置数据库管理标签页"""
         layout = QVBoxLayout(self.database_tab)
@@ -5494,30 +7887,103 @@ class ExpressQueryProGUI(QMainWindow):
         self.tables_table.setHorizontalHeaderLabels(["表名", "记录数", "说明"])
         self.tables_table.horizontalHeader().setStretchLastSection(True)
         
-        # 设置为只读模式
-        self.tables_table.setEditTriggers(QTableWidget.NoEditTriggers)  # 禁止编辑
-        self.tables_table.setSelectionBehavior(QTableWidget.SelectRows)  # 按行选择
-        self.tables_table.setSelectionMode(QTableWidget.SingleSelection)  # 单选模式
-        self.tables_table.setAlternatingRowColors(True)  # 交替行颜色
+        self.tables_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tables_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tables_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.tables_table.setAlternatingRowColors(True)
         
         tables_layout.addWidget(self.tables_table)
         tables_group.setLayout(tables_layout)
         layout.addWidget(tables_group)
         
-        # 操作按钮
-        btn_layout = QHBoxLayout()
+        # 操作按钮 - 第一行
+        btn_layout1 = QHBoxLayout()
         
         backup_btn = QPushButton("💾 备份管理")
         backup_btn.clicked.connect(self.show_backup_dialog)
-        btn_layout.addWidget(backup_btn)
+        btn_layout1.addWidget(backup_btn)
         
         optimize_btn = QPushButton("🔧 优化数据库")
         optimize_btn.clicked.connect(self.optimize_database)
-        btn_layout.addWidget(optimize_btn)
+        btn_layout1.addWidget(optimize_btn)
         
-        btn_layout.addStretch()
+        btn_layout1.addStretch()
+        layout.addLayout(btn_layout1)
         
-        layout.addLayout(btn_layout)
+        # ========== 新增：历史数据重建按钮 ==========
+        rebuild_group = QGroupBox("历史数据重建（从现有物流轨迹解析）")
+        rebuild_layout = QVBoxLayout()
+        
+        rebuild_info = QLabel(
+            "💡 说明：从快递汇总表中已有的物流轨迹数据，重新解析并生成时效历史和节点运输历史。\n"
+            "   适用于：已有签收/到站记录但未自动记录到历史表的情况。无需调用API，基于本地数据重建。"
+        )
+        rebuild_info.setWordWrap(True)
+        rebuild_info.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        rebuild_layout.addWidget(rebuild_info)
+        
+        rebuild_btn_layout = QHBoxLayout()
+        
+        # 重建时效历史按钮
+        self.rebuild_delivery_btn = QPushButton("📊 重建时效历史数据")
+        self.rebuild_delivery_btn.setToolTip("从现有快递数据中解析揽收和签收时间，更新 delivery_history 表")
+        self.rebuild_delivery_btn.clicked.connect(self.rebuild_delivery_history)
+        self.rebuild_delivery_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        rebuild_btn_layout.addWidget(self.rebuild_delivery_btn)
+        
+        # 重建节点历史按钮
+        self.rebuild_node_btn = QPushButton("📍 重建节点运输历史数据")
+        self.rebuild_node_btn.setToolTip("从现有快递数据中解析物流节点，更新 node_transit_history 表")
+        self.rebuild_node_btn.clicked.connect(self.rebuild_node_history)
+        self.rebuild_node_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.PURPLE_LAVENDER.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.PURPLE_WISTERIA.name()};
+            }}
+        """)
+        rebuild_btn_layout.addWidget(self.rebuild_node_btn)
+        
+        # 全部重建按钮
+        self.rebuild_all_btn = QPushButton("🔄 全部重建（时效+节点）")
+        self.rebuild_all_btn.setToolTip("同时重建时效历史和节点运输历史")
+        self.rebuild_all_btn.clicked.connect(self.rebuild_all_history)
+        self.rebuild_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.BLUE_SKY.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.BLUE_LAVENDER.name()};
+            }}
+        """)
+        rebuild_btn_layout.addWidget(self.rebuild_all_btn)
+        
+        rebuild_layout.addLayout(rebuild_btn_layout)
+        
+        # 进度条
+        self.rebuild_progress = QProgressBar()
+        self.rebuild_progress.setVisible(False)
+        rebuild_layout.addWidget(self.rebuild_progress)
+        
+        # 状态标签
+        self.rebuild_status = QLabel("")
+        self.rebuild_status.setStyleSheet("color: #666; font-size: 11px;")
+        rebuild_layout.addWidget(self.rebuild_status)
+        
+        rebuild_group.setLayout(rebuild_layout)
+        layout.addWidget(rebuild_group)
+        # ========== 新增结束 ==========
         
         # 刷新数据库信息
         self.refresh_database_info()
@@ -5566,7 +8032,7 @@ class ExpressQueryProGUI(QMainWindow):
         
         # ====== 已到驿站/代收点 ======
         # 驿站相关关键词（优先级高于在途中和派件中）
-        驿站_keywords = [
+        station_keywords = [
             '驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站', 
             '兔喜', '超市', '代理点', '自提', '代收', '投柜', '出柜',
             '存局', '已送达', '便利店', '物业', '门卫', '快递点', '菜鸟驿站',
@@ -5575,7 +8041,7 @@ class ExpressQueryProGUI(QMainWindow):
             '蜂巢', 'e栈', '收件宝', '近邻宝', '格格货栈', '乐收'
         ]
         
-        for keyword in 驿站_keywords:
+        for keyword in station_keywords:
             if keyword in context_lower or keyword in context:
                 return 'arrived'
         
@@ -5652,7 +8118,7 @@ class ExpressQueryProGUI(QMainWindow):
                         '44', '46', '47', '48']
         
         state_int = int(state) if state.isdigit() else 0
-        if state in transit_states or (49 <= state_int <= 69) or (74 <= state_int <= 89) or (91 <= state_int <= 99):
+        if state in transit_states:
             return 'transit'
         
         # 通过内容判断在途中
@@ -5798,7 +8264,11 @@ class ExpressQueryProGUI(QMainWindow):
                 else:
                     QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
                     return
-                
+            
+        # 显示进度条
+        self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 0)  # 不确定进度模式
+        self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在刷新 {tracking_num}...")
         
         thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
@@ -5807,7 +8277,9 @@ class ExpressQueryProGUI(QMainWindow):
         self.query_threads.append(thread)
         
     def on_single_refresh_finished(self, result: dict, tracking_num: str):
-        """单个快递刷新完成"""
+        """单个快递刷新完成 - 隐藏进度条"""
+        self.global_progress.setVisible(False)
+
         if result.get('success'):
             self.update_express_summary(result['data'])
             self.status_bar.showMessage(f"{tracking_num} 刷新成功", 3000)
@@ -5843,11 +8315,16 @@ class ExpressQueryProGUI(QMainWindow):
                             print(f"[刷新失败] 切换到账号: {new_account_name}")
                         
                         if not self.load_current_api_account():
+                            self.global_progress.setVisible(False)
                             self.status_bar.showMessage(f"{tracking_num} 刷新失败（切换账号失败）", 3000)
                             return
                         
                         self.update_api_account_display()
-                        self.status_bar.showMessage(f"{tracking_num} 刷新失败，正在切换账号重试...", 3000)
+                        
+                        # 显示重试进度
+                        self.global_progress.setVisible(True)
+                        self.global_progress.setRange(0, 0)
+                        self.status_bar.showMessage(f"{tracking_num} 刷新失败，正在切换账号重试...")
                         
                         # 获取该快递的公司代码
                         company_code = ""
@@ -5876,8 +8353,11 @@ class ExpressQueryProGUI(QMainWindow):
                     print("[刷新失败] api_account_manager 为 None")
                 self.status_bar.showMessage(f"{tracking_num} 刷新失败: {error_msg}", 5000)
 
+        self.global_progress.setVisible(False)
+
     def on_single_refresh_retry_finished(self, result: dict, tracking_num: str):
-        """单个快递刷新重试完成"""
+        """单个快递刷新重试完成 - 隐藏进度条"""
+        self.global_progress.setVisible(False)
         if result.get('success'):
             self.update_express_summary(result['data'])
             self.status_bar.showMessage(f"{tracking_num} 刷新成功（切换账号后）", 3000)
@@ -5899,7 +8379,7 @@ class ExpressQueryProGUI(QMainWindow):
         dialog.exec()
         
     def add_manual_express(self):
-        """手动添加快递"""
+        """手动添加快递 - 添加进度条"""
         tracking_num = self.manual_tracking_input.text().strip()
         if not tracking_num:
             QMessageBox.warning(self, "提示", "请输入快递单号！")
@@ -5915,6 +8395,10 @@ class ExpressQueryProGUI(QMainWindow):
                 QMessageBox.information(self, "提示", "该快递单号已存在于汇总中")
                 return
                 
+        # 显示进度条
+        self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 0)  # 不确定进度模式
+        self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在查询并添加 {tracking_num}...")
         
         thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
@@ -6094,7 +8578,9 @@ class ExpressQueryProGUI(QMainWindow):
 
 
     def on_manual_add_finished(self, result: dict, tracking_num: str, company_code: str, company_name: str):
-        """手动添加完成"""
+        """手动添加完成 - 隐藏进度条"""
+        self.global_progress.setVisible(False)
+        
         if result.get('success'):
             self.add_to_summary(result['data'], company_name)
             self.manual_tracking_input.clear()
@@ -6189,6 +8675,10 @@ class ExpressQueryProGUI(QMainWindow):
                         
             if should_record:
                 self.delivery_estimator.record_delivery(data)
+                
+        # 记录节点运输时间
+        if self.node_analyzer and track_list:
+            self.node_analyzer.record_node_transit(data)
         
     def update_express_summary(self, data: dict):
         """更新快递汇总信息"""
@@ -6252,9 +8742,13 @@ class ExpressQueryProGUI(QMainWindow):
                         
             if should_record:
                 self.delivery_estimator.record_delivery(data)
+                
+        # 记录节点运输时间
+        if self.node_analyzer and track_list:
+            self.node_analyzer.record_node_transit(data)
             
     def refresh_category(self, category_key: str):
-        """刷新分类下所有快递"""
+        """刷新分类下所有快递 - 添加进度条"""
         if not self.customer or not self.key:
             QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
             return
@@ -6274,7 +8768,6 @@ class ExpressQueryProGUI(QMainWindow):
             self.api_account_manager.check_and_reset_daily_usage()
             
             if not self.api_account_manager.is_current_account_available():
-                # 尝试切换到下一个账号（正常切换，不强制）
                 if self.api_account_manager.switch_to_next_account(force_switch=False):
                     self.load_current_api_account()
                     usage_info = self.api_account_manager.get_usage_info()
@@ -6290,16 +8783,19 @@ class ExpressQueryProGUI(QMainWindow):
                 'company_code': item.express_data.get('company_code', '')
             })
             
+        # 显示进度条（确定进度模式）
         self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 100)
+        self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在刷新 {category_widget.category_name} 分类...")
         
         self.batch_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
-        self.batch_thread.finished.connect(self.on_batch_refresh_finished)  # 现在接收两个参数
+        self.batch_thread.finished.connect(self.on_batch_refresh_finished)
         self.batch_thread.progress.connect(self.on_batch_progress)
         self.batch_thread.start()
         
     def refresh_all_express(self):
-        """刷新所有快递"""
+        """刷新所有快递 - 添加进度条"""
         if not self.customer or not self.key:
             QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
             return
@@ -6309,7 +8805,6 @@ class ExpressQueryProGUI(QMainWindow):
             self.api_account_manager.check_and_reset_daily_usage()
             
             if not self.api_account_manager.is_current_account_available():
-                # 尝试切换到下一个账号（正常切换，不强制）
                 if self.api_account_manager.switch_to_next_account(force_switch=False):
                     self.load_current_api_account()
                     usage_info = self.api_account_manager.get_usage_info()
@@ -6330,22 +8825,33 @@ class ExpressQueryProGUI(QMainWindow):
             QMessageBox.information(self, "提示", "没有快递需要刷新")
             return
             
+        # 显示进度条（确定进度模式）
         self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 100)
+        self.global_progress.setValue(0)
         self.status_bar.showMessage("正在刷新所有快递...")
         
         self.batch_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
-        self.batch_thread.finished.connect(self.on_batch_refresh_finished)  # 现在接收两个参数
+        self.batch_thread.finished.connect(self.on_batch_refresh_finished)
         self.batch_thread.progress.connect(self.on_batch_progress)
         self.batch_thread.start()
         
     def on_batch_progress(self, value: int, message: str):
         """批量刷新进度"""
         self.global_progress.setValue(value)
+        if hasattr(self, 'toolbar_progress'):
+            self.toolbar_progress.setVisible(True)
+            self.toolbar_progress.setRange(0, 100)
+            self.toolbar_progress.setValue(value)
+            # 简化显示，只显示进度百分比
+            self.toolbar_progress.setFormat(f"%p%")
         self.status_bar.showMessage(message)
         
     def on_batch_refresh_finished(self, success_results: list, failed_items: list):
-        """批量刷新完成"""
+        """批量刷新完成 - 隐藏进度条"""
         self.global_progress.setVisible(False)
+        if hasattr(self, 'toolbar_progress'):
+            self.toolbar_progress.setVisible(False)
         
         success_count = len(success_results)
         fail_count = len(failed_items)
@@ -6408,11 +8914,13 @@ class ExpressQueryProGUI(QMainWindow):
         self.load_summary_data()
 
     def retry_failed_refresh(self, failed_items: list):
-        """重试失败的刷新"""
+        """重试失败的刷新 - 添加进度条"""
         if not failed_items:
             return
         
         self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 100)
+        self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在使用新账号重试 {len(failed_items)} 个失败的单号...")
         
         # 转换为批量刷新需要的格式
@@ -6595,10 +9103,11 @@ class ExpressQueryProGUI(QMainWindow):
         company_name = self.company_combo.currentText()
         company_code = self.company_codes.get(company_name, "")
         
-        self.status_label.setText("正在查询中，请稍候...")
+        # 显示进度条
         self.query_btn.setEnabled(False)
         self.query_progress.setVisible(True)
         self.query_progress.setRange(0, 100)
+        self.status_label.setText("正在查询中，请稍候...")
         self.status_bar.showMessage("正在查询...")
         
         self.query_thread = ExpressQueryThreadPro(
@@ -6653,7 +9162,7 @@ class ExpressQueryProGUI(QMainWindow):
                 if reply == QMessageBox.Yes:
                     self.main_tab_widget.setCurrentIndex(0)
         else:
-            # ========== 查询失败，尝试切换账号重试 ==========
+            # 查询失败，尝试切换账号重试
             error_msg = result.get('error', '未知错误')
             
             if DEBUG_MODE:
@@ -7068,6 +9577,7 @@ class ExpressQueryProGUI(QMainWindow):
             'express_summary': '快递汇总数据',
             'api_accounts': 'API账号',
             'delivery_history': '时效历史数据',
+            'node_transit_history': '节点运输历史数据',
             'user_settings': '用户设置'
         }
         
@@ -7180,7 +9690,12 @@ class ExpressQueryProGUI(QMainWindow):
             self.backup_timer.start()
         else:
             self.backup_timer.stop()
-            
+    
+        # 添加：加载调试模式设置
+        debug_mode_str = self.user_manager.get_user_setting("debug_mode", "0")
+        global DEBUG_MODE
+        DEBUG_MODE = debug_mode_str == "1"
+
     def save_user_settings(self):
         """保存用户设置"""
         self.user_manager.save_user_setting("max_backups", str(self.backup_manager.max_backups))
@@ -7382,7 +9897,7 @@ class ExpressQueryProGUI(QMainWindow):
                     f" | 🔑 API账号: {account_name} ({used}/{limit})"
                 )
                 
-                # 同时更新状态栏提示（使用 statusBar() 方法获取状态栏）
+                # 同时更新状态栏提示
                 status_bar = self.statusBar()
                 if status_bar:
                     status_bar.showMessage(f"当前使用API账号: {account_name}", 2000)
@@ -7391,6 +9906,302 @@ class ExpressQueryProGUI(QMainWindow):
                 status_bar = self.statusBar()
                 if status_bar:
                     status_bar.showMessage("警告：未配置API账号，无法查询快递", 3000)
+
+
+
+    def rebuild_delivery_history(self):
+        """重建时效历史数据 - 从现有快递数据中解析揽收和签收时间"""
+        if not self.user_manager.current_user_db:
+            QMessageBox.warning(self, "提示", "数据库未连接")
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(
+            self, "确认重建",
+            "此操作将扫描所有快递汇总数据，\n"
+            "从已有物流轨迹中提取揽收和签收时间，\n"
+            "重建 delivery_history 表。\n\n"
+            "现有数据将被覆盖，确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 使用线程执行，避免界面卡顿
+        self.rebuild_thread = QThread()
+        self.rebuild_worker = RebuildDeliveryWorker(self.user_manager.current_user_db)
+        self.rebuild_worker.moveToThread(self.rebuild_thread)
+        
+        self.rebuild_thread.started.connect(self.rebuild_worker.run)
+        self.rebuild_worker.progress.connect(self.on_rebuild_progress)
+        self.rebuild_worker.status.connect(self.on_rebuild_status)
+        self.rebuild_worker.finished.connect(self.on_rebuild_finished)
+        self.rebuild_worker.finished.connect(self.rebuild_thread.quit)
+        self.rebuild_worker.finished.connect(self.rebuild_worker.deleteLater)
+        self.rebuild_thread.finished.connect(self.rebuild_thread.deleteLater)
+        
+        self.rebuild_progress.setVisible(True)
+        self.rebuild_progress.setValue(0)
+        self.rebuild_delivery_btn.setEnabled(False)
+        self.rebuild_node_btn.setEnabled(False)
+        self.rebuild_all_btn.setEnabled(False)
+        self.rebuild_status.setText("正在重建时效历史数据...")
+        
+        self.rebuild_thread.start()
+
+
+    def rebuild_node_history(self):
+        """重建节点运输历史数据 - 从现有快递数据中解析物流节点"""
+        if not self.user_manager.current_user_db:
+            QMessageBox.warning(self, "提示", "数据库未连接")
+            return
+        
+        # 确认对话框
+        reply = QMessageBox.question(
+            self, "确认重建",
+            "此操作将扫描所有快递汇总数据，\n"
+            "从已有物流轨迹中提取节点信息，\n"
+            "重建 node_transit_history 表。\n\n"
+            "现有数据将被覆盖，确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 使用线程执行
+        self.rebuild_thread = QThread()
+        self.rebuild_worker = RebuildNodeWorker(self.user_manager.current_user_db)
+        self.rebuild_worker.moveToThread(self.rebuild_thread)
+        
+        self.rebuild_thread.started.connect(self.rebuild_worker.run)
+        self.rebuild_worker.progress.connect(self.on_rebuild_progress)
+        self.rebuild_worker.status.connect(self.on_rebuild_status)
+        self.rebuild_worker.finished.connect(self.on_rebuild_finished)
+        self.rebuild_worker.finished.connect(self.rebuild_thread.quit)
+        self.rebuild_worker.finished.connect(self.rebuild_worker.deleteLater)
+        self.rebuild_thread.finished.connect(self.rebuild_thread.deleteLater)
+        
+        self.rebuild_progress.setVisible(True)
+        self.rebuild_progress.setValue(0)
+        self.rebuild_delivery_btn.setEnabled(False)
+        self.rebuild_node_btn.setEnabled(False)
+        self.rebuild_all_btn.setEnabled(False)
+        self.rebuild_status.setText("正在重建节点运输历史数据...")
+        
+        self.rebuild_thread.start()
+
+
+    def rebuild_all_history(self):
+        """全部重建（时效+节点）"""
+        if not self.user_manager.current_user_db:
+            QMessageBox.warning(self, "提示", "数据库未连接")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认重建",
+            "此操作将扫描所有快递汇总数据，\n"
+            "同时重建 delivery_history 和 node_transit_history 表。\n\n"
+            "现有数据将被覆盖，确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        self.rebuild_thread = QThread()
+        self.rebuild_worker = RebuildAllWorker(self.user_manager.current_user_db)
+        self.rebuild_worker.moveToThread(self.rebuild_thread)
+        
+        self.rebuild_thread.started.connect(self.rebuild_worker.run)
+        self.rebuild_worker.progress.connect(self.on_rebuild_progress)
+        self.rebuild_worker.status.connect(self.on_rebuild_status)
+        self.rebuild_worker.finished.connect(self.on_rebuild_finished)
+        self.rebuild_worker.finished.connect(self.rebuild_thread.quit)
+        self.rebuild_worker.finished.connect(self.rebuild_worker.deleteLater)
+        self.rebuild_thread.finished.connect(self.rebuild_thread.deleteLater)
+        
+        self.rebuild_progress.setVisible(True)
+        self.rebuild_progress.setValue(0)
+        self.rebuild_delivery_btn.setEnabled(False)
+        self.rebuild_node_btn.setEnabled(False)
+        self.rebuild_all_btn.setEnabled(False)
+        self.rebuild_status.setText("正在全部重建（时效+节点）...")
+        
+        self.rebuild_thread.start()
+
+
+    def on_rebuild_progress(self, value: int):
+        """重建进度更新"""
+        self.rebuild_progress.setValue(value)
+
+
+    def on_rebuild_status(self, message: str):
+        """重建状态更新"""
+        self.rebuild_status.setText(message)
+
+
+    def on_rebuild_finished(self, success: bool, message: str):
+        """重建完成"""
+        self.rebuild_progress.setVisible(False)
+        self.rebuild_delivery_btn.setEnabled(True)
+        self.rebuild_node_btn.setEnabled(True)
+        self.rebuild_all_btn.setEnabled(True)
+        
+        if success:
+            # 刷新数据库信息显示
+            self.refresh_database_info()
+            
+            # 调试模式下输出详细信息到控制台
+            if DEBUG_MODE:
+                print("=" * 60)
+                print("[重建完成]")
+                print(f"  结果: 成功")
+                print(f"  详情: {message}")
+                print("=" * 60)
+            
+            QMessageBox.information(self, "重建完成", message)
+        else:
+            # 调试模式下输出错误信息到控制台
+            if DEBUG_MODE:
+                print("=" * 60)
+                print("[重建失败]")
+                print(f"  结果: 失败")
+                print(f"  错误信息: {message}")
+                print("=" * 60)
+            
+            QMessageBox.critical(self, "重建失败", message)
+        
+        self.rebuild_status.setText("")
+
+    def batch_export_numbers(self):
+        """批量导出快递单号"""
+        # 收集所有快递单号
+        all_numbers = []
+        selected_numbers = []
+        
+        for category_key, widget in self.category_widgets.items():
+            for item in widget.express_items:
+                data = item.express_data
+                tracking_num = data.get('tracking_number', '')
+                company_name = data.get('company_name', '')
+                status = data.get('status', '')
+                remark = data.get('remark', '')
+                
+                if tracking_num:
+                    all_numbers.append({
+                        'number': tracking_num,
+                        'company': company_name,
+                        'status': status,
+                        'remark': remark,
+                        'category': widget.category_name
+                    })
+        
+        if not all_numbers:
+            QMessageBox.information(self, "提示", "没有可导出的快递单号")
+            return
+        
+        # 弹出选择对话框
+        dialog = BatchExportDialog(all_numbers, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        
+        selected_numbers = dialog.get_selected_numbers()
+        export_format = dialog.get_export_format()
+        
+        if not selected_numbers:
+            QMessageBox.information(self, "提示", "未选择任何快递单号")
+            return
+        
+        # 根据格式导出
+        if export_format == 'txt':
+            self.export_numbers_as_txt(selected_numbers)
+        elif export_format == 'csv':
+            self.export_numbers_as_csv(selected_numbers)
+        elif export_format == 'json':
+            self.export_numbers_as_json(selected_numbers)
+
+
+    def export_numbers_as_txt(self, numbers: List[Dict]):
+        """导出为纯文本格式（每行一个单号）"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出快递单号", 
+            f"express_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            "文本文件 (*.txt)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for item in numbers:
+                    f.write(f"{item['number']}\n")
+            
+            QMessageBox.information(self, "导出成功", 
+                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
+
+
+    def export_numbers_as_csv(self, numbers: List[Dict]):
+        """导出为CSV格式（包含详细信息）"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出快递单号", 
+            f"express_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "CSV文件 (*.csv)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            import csv
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(["快递单号", "快递公司", "当前状态", "备注", "分类"])
+                
+                for item in numbers:
+                    writer.writerow([
+                        item['number'],
+                        item['company'],
+                        item['status'],
+                        item['remark'],
+                        item['category']
+                    ])
+            
+            QMessageBox.information(self, "导出成功", 
+                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
+
+
+    def export_numbers_as_json(self, numbers: List[Dict]):
+        """导出为JSON格式"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出快递单号", 
+            f"express_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            "JSON文件 (*.json)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            export_data = {
+                'export_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'total_count': len(numbers),
+                'numbers': numbers
+            }
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            
+            QMessageBox.information(self, "导出成功", 
+                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
 
 class SettingsDialogPro(QDialog):
     """设置对话框"""
@@ -7404,7 +10215,7 @@ class SettingsDialogPro(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle("系统设置")
-        self.setMinimumSize(500, 500)
+        self.setMinimumSize(500, 550)
         
         layout = QVBoxLayout()
         layout.setSpacing(15)
@@ -7443,6 +10254,26 @@ class SettingsDialogPro(QDialog):
         delivery_group.setLayout(delivery_layout)
         layout.addWidget(delivery_group)
         
+        # 节点历史数据管理（新增）
+        node_group = QGroupBox("节点运输历史数据")
+        node_layout = QVBoxLayout()
+        
+        node_info_label = QLabel("基于历史节点运输数据预估各路段耗时")
+        node_layout.addWidget(node_info_label)
+        
+        node_stats_layout = QHBoxLayout()
+        self.node_stats_label = QLabel("加载中...")
+        node_stats_layout.addWidget(self.node_stats_label)
+        node_stats_layout.addStretch()
+        node_layout.addLayout(node_stats_layout)
+        
+        clear_node_btn = QPushButton("清空节点历史数据")
+        clear_node_btn.clicked.connect(self.clear_node_history)
+        node_layout.addWidget(clear_node_btn)
+        
+        node_group.setLayout(node_layout)
+        layout.addWidget(node_group)
+        
         # 备份设置
         backup_group = QGroupBox("备份设置")
         backup_layout = QVBoxLayout()
@@ -7473,7 +10304,8 @@ class SettingsDialogPro(QDialog):
         # 调试模式
         debug_layout = QHBoxLayout()
         self.debug_check = QCheckBox("启用调试模式")
-        self.debug_check.setChecked(DEBUG_MODE)
+        # 修改：从父窗口的 DEBUG_MODE 全局变量读取，而不是直接读取全局变量
+        self.debug_check.setChecked(DEBUG_MODE)  # DEBUG_MODE 已经是全局变量
         debug_layout.addWidget(self.debug_check)
         debug_layout.addStretch()
         layout.addLayout(debug_layout)
@@ -7496,6 +10328,7 @@ class SettingsDialogPro(QDialog):
         self.setLayout(layout)
         
         self.load_delivery_stats()
+        self.load_node_stats()
         
     def load_delivery_stats(self):
         """加载时效统计"""
@@ -7505,6 +10338,15 @@ class SettingsDialogPro(QDialog):
             if result:
                 count = result[0]['count']
                 self.stats_label.setText(f"已记录 {count} 条时效数据")
+                
+    def load_node_stats(self):
+        """加载节点统计"""
+        if self.parent.current_user_db:
+            sql = "SELECT COUNT(*) as count FROM node_transit_history"
+            result = self.parent.current_user_db.execute_query(sql)
+            if result:
+                count = result[0]['count']
+                self.node_stats_label.setText(f"已记录 {count} 条节点运输数据")
                 
     def clear_delivery_history(self):
         """清空时效历史数据"""
@@ -7520,6 +10362,21 @@ class SettingsDialogPro(QDialog):
                 self.parent.current_user_db.execute_update(sql)
                 self.load_delivery_stats()
                 QMessageBox.information(self, "成功", "时效历史数据已清空")
+                
+    def clear_node_history(self):
+        """清空节点历史数据"""
+        reply = QMessageBox.question(
+            self, "确认清空",
+            "确定要清空所有节点运输历史数据吗？\n清空后节点时间预估将使用默认值。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.parent.current_user_db:
+                sql = "DELETE FROM node_transit_history"
+                self.parent.current_user_db.execute_update(sql)
+                self.load_node_stats()
+                QMessageBox.information(self, "成功", "节点历史数据已清空")
         
     def manage_accounts(self):
         """管理API账号"""
@@ -7527,11 +10384,9 @@ class SettingsDialogPro(QDialog):
             dialog = ApiAccountDialog(self.parent.current_user_db, self)
             if dialog.exec() == QDialog.Accepted:
                 if self.parent.api_account_manager:
-                    # ========== 确保刷新 ==========
                     self.parent.api_account_manager.load_accounts()
                     self.parent.load_current_api_account()
                     self.parent.update_api_account_display()
-                    # ============================
         else:
             QMessageBox.warning(self, "提示", "数据库未连接")
             
@@ -7546,11 +10401,17 @@ class SettingsDialogPro(QDialog):
         else:
             self.parent.backup_timer.stop()
         self.parent.user_manager.save_user_setting("auto_backup", str(auto_backup).lower())
+    
+        # 修改这里：保存调试模式设置到数据库
+        debug_mode = self.debug_check.isChecked()
+        self.parent.user_manager.save_user_setting("debug_mode", "1" if debug_mode else "0")
         
+        # 同时更新全局变量
         global DEBUG_MODE
-        DEBUG_MODE = self.debug_check.isChecked()
+        DEBUG_MODE = debug_mode
         
         QMessageBox.information(self, "成功", "设置已保存")
+
 
 class BatchImportDialog(QDialog):
     """批量导入快递单号对话框"""
@@ -7803,40 +10664,34 @@ class BatchImportDialog(QDialog):
         # 快递单号识别规则（完整版）
         rules = [
             # ========== 顺丰速运 ==========
-            # SF开头 + 12位数字，或纯12位数字
             (lambda n: n.startswith('SF') and len(n) >= 12, 'shunfeng'),
             (lambda n: len(n) == 12 and n.isdigit(), 'shunfeng'),
             (lambda n: n.startswith('SF') and n[2:].isdigit() and len(n) == 15, 'shunfeng'),
             
             # ========== 圆通速递 ==========
-            # YT开头，或10-18位纯数字（常见以2、3、4、5、6开头）
             (lambda n: n.startswith('YT') and len(n) >= 10, 'yuantong'),
             (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '23456', 'yuantong'),
             (lambda n: n.startswith('YT') and n[2:].isdigit(), 'yuantong'),
             
             # ========== 中通快递 ==========
-            # ZT开头，或10-18位数字（常见以7、8开头）
             (lambda n: n.startswith('ZT') and len(n) >= 10, 'zhongtong'),
             (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '78', 'zhongtong'),
             (lambda n: len(n) == 12 and n.isdigit() and n.startswith('7'), 'zhongtong'),
             (lambda n: len(n) == 14 and n.isdigit() and n.startswith('8'), 'zhongtong'),
             
             # ========== 韵达快递 ==========
-            # YD开头，或13位数字（常见以1、4、5开头）
             (lambda n: n.startswith('YD') and len(n) >= 10, 'yunda'),
             (lambda n: len(n) == 13 and n.isdigit() and n[0] in '145', 'yunda'),
             (lambda n: n.startswith('YD') and n[2:].isdigit(), 'yunda'),
             (lambda n: len(n) == 15 and n.isdigit() and n.startswith('5'), 'yunda'),
             
             # ========== 申通快递 ==========
-            # ST开头，或12位数字（常见以3、7、8开头）
             (lambda n: n.startswith('ST') and len(n) >= 10, 'shentong'),
             (lambda n: len(n) == 12 and n.isdigit() and n[0] in '378', 'shentong'),
             (lambda n: n.startswith('STO') and len(n) >= 10, 'shentong'),
             (lambda n: len(n) == 13 and n.isdigit() and n.startswith('77'), 'shentong'),
             
             # ========== 京东物流 ==========
-            # JD开头，或JDV/JDE开头，或10-15位数字
             (lambda n: n.startswith('JD'), 'jd'),
             (lambda n: n.startswith('JDV'), 'jd'),
             (lambda n: n.startswith('JDE'), 'jd'),
@@ -7845,7 +10700,6 @@ class BatchImportDialog(QDialog):
             (lambda n: 10 <= len(n) <= 15 and n.isdigit() and n[0] in '0123456789', 'jd'),
             
             # ========== EMS/中国邮政 ==========
-            # EMS开头，或13位数字（常见以9、10、11、12开头）
             (lambda n: n.startswith('EMS'), 'ems'),
             (lambda n: len(n) == 13 and n.isdigit() and n[:2] in ['98', '99', '10', '11', '12', '13', '14'], 'ems'),
             (lambda n: n.startswith('EP') and len(n) >= 10, 'ems'),
@@ -7873,13 +10727,11 @@ class BatchImportDialog(QDialog):
             (lambda n: len(n) == 13 and n.isdigit() and n.startswith('9'), 'youzhengguo'),
             
             # ========== 极兔速递 ==========
-            # JT开头，或10-15位数字
             (lambda n: n.startswith('JT') and len(n) >= 10, 'jtexpress'),
             (lambda n: n.startswith('J&T') and len(n) >= 10, 'jtexpress'),
             (lambda n: 10 <= len(n) <= 18 and n.isdigit() and n[0] in '0123456789', 'jtexpress'),
             
             # ========== 百世快递 ==========
-            # 以B、H开头，或百世专用格式
             (lambda n: n.startswith('B') and len(n) >= 10, 'huitongkuaidi'),
             (lambda n: n.startswith('H') and len(n) >= 10, 'huitongkuaidi'),
             (lambda n: n.startswith('HT') and len(n) >= 10, 'huitongkuaidi'),
@@ -7888,14 +10740,12 @@ class BatchImportDialog(QDialog):
             (lambda n: len(n) == 14 and n.isdigit() and n.startswith('3'), 'huitongkuaidi'),
             
             # ========== 德邦快递 ==========
-            # DPK开头，或以DP开头
             (lambda n: n.startswith('DPK') and len(n) >= 10, 'debangwuliu'),
             (lambda n: n.startswith('DP') and len(n) >= 10, 'debangwuliu'),
             (lambda n: n.startswith('DEBANG') and len(n) >= 10, 'debangwuliu'),
             (lambda n: len(n) >= 8 and len(n) <= 12 and n.isdigit() and n[0] in '56789', 'debangwuliu'),
             
             # ========== 天天快递 ==========
-            # TT开头，或12-14位数字
             (lambda n: n.startswith('TT') and len(n) >= 10, 'tiantian'),
             (lambda n: n.startswith('TTK') and len(n) >= 10, 'tiantian'),
             (lambda n: 12 <= len(n) <= 14 and n.isdigit() and n[0] in '0123456789', 'tiantian'),
@@ -8133,7 +10983,7 @@ class BatchImportDialog(QDialog):
         numbers = []
         pre_recognized_companies = {}  # 单号 -> 预识别的公司代码
         
-        # 常见快递公司名称关键词映射（只保留中文关键词，避免误判）
+        # 常见快递公司名称关键词映射
         company_keywords = {
             'shunfeng': ['顺丰', '顺丰速运'],
             'yuantong': ['圆通', '圆通速递'],
@@ -8167,18 +11017,15 @@ class BatchImportDialog(QDialog):
             extracted_num = None
             pre_company = None
             
-            # 先检查是否包含已知的快递公司关键词（只检查中文关键词）
+            # 先检查是否包含已知的快递公司关键词
             for company_code, keywords in company_keywords.items():
                 for keyword in keywords:
-                    # 检查关键词是否在字符串中
                     idx = item.find(keyword)
                     if idx >= 0:
                         pre_company = company_code
-                        # 移除关键词部分，提取可能的单号
                         remaining = item[:idx] + item[idx + len(keyword):]
                         remaining = remaining.strip()
                         if remaining:
-                            # 检查剩余部分是否看起来像单号
                             if len(remaining) >= 6:
                                 extracted_num = remaining
                         break
@@ -8187,20 +11034,15 @@ class BatchImportDialog(QDialog):
             
             # 如果没有通过关键词找到，尝试提取单号
             if not extracted_num:
-                # 按空格分割，找出最像单号的部分
                 parts = item.split()
                 for part in parts:
                     part = part.strip()
-                    # 检查是否像快递单号（长度>=6，包含字母或数字）
                     if len(part) >= 6 and any(c.isalnum() for c in part):
-                        # 确保不是纯中文
                         if not all('\u4e00' <= c <= '\u9fff' for c in part):
                             extracted_num = part
                             break
                 
-                # 如果还是没找到，检查整个字符串
                 if not extracted_num:
-                    # 移除所有空格和中文字符
                     cleaned = re.sub(r'[\s\u4e00-\u9fff]+', '', item)
                     if len(cleaned) >= 6:
                         extracted_num = cleaned
@@ -8209,11 +11051,8 @@ class BatchImportDialog(QDialog):
             
             # 清理单号
             if extracted_num:
-                # 移除中文和特殊字符
                 extracted_num = re.sub(r'[\u4e00-\u9fff\s]+', '', extracted_num)
                 extracted_num = extracted_num.strip()
-                
-                # 提取字母数字部分
                 alnum_part = ''.join(c for c in extracted_num if c.isalnum())
                 if len(alnum_part) >= 6:
                     extracted_num = alnum_part
@@ -8247,21 +11086,18 @@ class BatchImportDialog(QDialog):
             self.preview_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
             self.preview_table.setItem(row, 1, QTableWidgetItem(num))
             
-            # 确定快递公司 - 关键修改：不确定时使用空字符串让API自动识别
+            # 确定快递公司
             company_code = ""
             company_name = "自动识别"
             status = "API自动"
             status_color = QColor(100, 100, 100)
             
-            # 优先使用从文本中识别的公司（这是最可靠的）
             if num in pre_recognized_companies:
                 company_code = pre_recognized_companies[num]
                 company_name = self.get_company_name_by_code(company_code)
                 status = "从文本识别"
                 status_color = QColor(0, 100, 200)
             elif auto_detect:
-                # 只有当单号有明显特征时才自动识别
-                # 对于纯数字单号，如果没有文本识别，就留空让API自动判断
                 detected_code = self.detect_company_by_number(num)
                 if detected_code:
                     company_code = detected_code
@@ -8269,13 +11105,11 @@ class BatchImportDialog(QDialog):
                     status = "格式识别"
                     status_color = QColor(0, 150, 0)
                 else:
-                    # 无法识别，使用空字符串让API自动判断
                     company_code = ""
                     company_name = "自动识别"
                     status = "API自动"
                     status_color = QColor(100, 100, 100)
             else:
-                # 使用默认公司
                 company_code = default_company_code
                 company_name = default_company_name
                 status = "使用默认"
@@ -8324,6 +11158,7 @@ class BatchImportDialog(QDialog):
     def get_imported_numbers(self) -> List[Dict]:
         """获取导入的单号列表"""
         return self.imported_numbers
+
 
 class CropImageDialog(QDialog):
     """图片裁剪对话框"""
@@ -8483,6 +11318,662 @@ class CropImageDialog(QDialog):
         """获取裁剪后的图片"""
         return self.cropped_pixmap
 
+class RebuildDeliveryWorker(QObject):
+    """重建时效历史数据的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            # 获取所有有完整物流数据的快递
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                if DEBUG_MODE:
+                    print("[重建时效] 没有找到可用的快递数据")
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            
+            if DEBUG_MODE:
+                print(f"[重建时效] 开始扫描，共 {total} 条快递记录")
+            
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            # 先清空现有数据
+            self.db_manager.execute_update("DELETE FROM delivery_history")
+            
+            if DEBUG_MODE:
+                print("[重建时效] 已清空 delivery_history 表")
+            
+            # 创建临时时效估算器用于解析
+            estimator = DeliveryTimeEstimator(self.db_manager)
+            
+            success_count = 0
+            skip_count = 0  # 跳过的记录数
+            error_count = 0  # 错误记录数
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建时效] 跳过 {record.get('tracking_number', '')}: result_data 为空")
+                        continue
+                    
+                    data = json.loads(result_data)
+                    
+                    # 检查是否有完整的物流轨迹
+                    track_list = data.get('data', [])
+                    if len(track_list) < 2:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建时效] 跳过 {record.get('tracking_number', '')}: 轨迹不足2条 (共{len(track_list)}条)")
+                        continue
+                    
+                    # 检查是否已签收（state=3）
+                    state = str(data.get('state', ''))
+                    
+                    # 检查最后一条轨迹是否是签收
+                    last_context = track_list[-1].get('context', '') if track_list else ''
+                    is_signed = (state == '3') or estimator.is_signed(last_context)
+                    
+                    # 检查是否已到驿站
+                    is_arrived = estimator.is_arrived_at_station(last_context)
+                    
+                    if not is_signed and not is_arrived:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建时效] 跳过 {record.get('tracking_number', '')}: 未签收且未到驿站 (state={state})")
+                        continue
+                    
+                    # 使用现有的 estimator 记录数据
+                    estimator.record_delivery(data)
+                    success_count += 1
+                    
+                    if DEBUG_MODE:
+                        print(f"[重建时效] 成功记录 {record.get('tracking_number', '')} (签收={is_signed}, 到站={is_arrived})")
+                    
+                except json.JSONDecodeError as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建时效] JSON解析失败 {record.get('tracking_number', '')}: {e}")
+                except Exception as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建时效] 处理记录 {record.get('tracking_number', '')} 失败: {e}")
+                    continue
+                
+                # 更新进度
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录，成功 {success_count} 条")
+            
+            # 验证结果
+            verify_sql = "SELECT COUNT(*) as count FROM delivery_history"
+            verify_result = self.db_manager.execute_query(verify_sql)
+            final_count = verify_result[0]['count'] if verify_result else 0
+            
+            if DEBUG_MODE:
+                print(f"[重建时效] 完成统计:")
+                print(f"  总记录数: {total}")
+                print(f"  成功记录: {success_count}")
+                print(f"  跳过记录: {skip_count}")
+                print(f"  错误记录: {error_count}")
+                print(f"  最终 delivery_history 表记录数: {final_count}")
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录，成功提取 {success_count} 条时效数据\n最终 delivery_history 表共有 {final_count} 条记录")
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                import traceback
+                print(f"[重建时效] 异常: {e}")
+                traceback.print_exc()
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+class RebuildNodeWorker(QObject):
+    """重建节点运输历史数据的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            # 验证表结构
+            self.status.emit("正在验证表结构...")
+            check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='node_transit_history'"
+            result = self.db_manager.execute_query(check_sql)
+            if not result:
+                # 表不存在，尝试创建
+                self.status.emit("表不存在，正在创建...")
+                analyzer = LogisticsNodeAnalyzer(self.db_manager)
+                analyzer.init_node_history_table()
+            
+            # 获取表结构信息用于调试
+            pragma_sql = "PRAGMA table_info(node_transit_history)"
+            columns = self.db_manager.execute_query(pragma_sql)
+            if DEBUG_MODE:
+                print("[表结构] node_transit_history 列:")
+                for col in columns:
+                    print(f"  {col['name']} ({col['type']})")
+            
+
+            # 获取所有有完整物流数据的快递
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                if DEBUG_MODE:
+                    print("[重建节点] 没有找到可用的快递数据")
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            
+            if DEBUG_MODE:
+                print(f"[重建节点] 开始扫描，共 {total} 条快递记录")
+            
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            # 先清空现有数据
+            self.db_manager.execute_update("DELETE FROM node_transit_history")
+            
+            if DEBUG_MODE:
+                print("[重建节点] 已清空 node_transit_history 表")
+            
+            # 创建节点分析器
+            analyzer = LogisticsNodeAnalyzer(self.db_manager)
+            
+            success_count = 0
+            skip_count = 0  # 跳过的记录数
+            error_count = 0  # 错误记录数
+            node_segments_count = 0  # 记录提取的节点段数
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建节点] 跳过 {record.get('tracking_number', '')}: result_data 为空")
+                        continue
+                    
+                    data = json.loads(result_data)
+                    
+                    # 检查是否有完整的物流轨迹（至少2条）
+                    track_list = data.get('data', [])
+                    if len(track_list) < 2:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建节点] 跳过 {record.get('tracking_number', '')}: 轨迹不足2条 (共{len(track_list)}条)")
+                        continue
+                    
+                    # 记录节点数据
+                    analyzer.record_node_transit(data)
+                    success_count += 1
+                    
+                    # 统计节点段数（用于调试）
+                    nodes = analyzer.extract_nodes_from_track(track_list)
+                    segments = analyzer.calculate_node_transit_times(nodes)
+                    node_segments_count += len(segments)
+                    
+                    if DEBUG_MODE:
+                        print(f"[重建节点] 成功处理 {record.get('tracking_number', '')}: 提取 {len(segments)} 个节点段")
+                    
+                except json.JSONDecodeError as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建节点] JSON解析失败 {record.get('tracking_number', '')}: {e}")
+                except Exception as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建节点] 处理记录 {record.get('tracking_number', '')} 失败: {e}")
+                    continue
+                
+                # 更新进度
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录，成功 {success_count} 条，提取 {node_segments_count} 个节点段")
+            
+            # 验证结果
+            verify_sql = "SELECT COUNT(*) as count FROM node_transit_history"
+            verify_result = self.db_manager.execute_query(verify_sql)
+            final_count = verify_result[0]['count'] if verify_result else 0
+            
+            if DEBUG_MODE:
+                print(f"[重建节点] 完成统计:")
+                print(f"  总记录数: {total}")
+                print(f"  成功记录: {success_count}")
+                print(f"  跳过记录: {skip_count}")
+                print(f"  错误记录: {error_count}")
+                print(f"  提取节点段数: {node_segments_count}")
+                print(f"  最终 node_transit_history 表记录数: {final_count}")
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录\n成功处理 {success_count} 条快递\n提取 {node_segments_count} 个节点段\n最终 node_transit_history 表共有 {final_count} 条记录")
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                import traceback
+                print(f"[重建节点] 异常: {e}")
+                traceback.print_exc()
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+class RebuildAllWorker(QObject):
+    """全部重建（时效+节点）的工作线程"""
+    finished = Signal(bool, str)
+    progress = Signal(int)
+    status = Signal(str)
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        super().__init__()
+        self.db_manager = db_manager
+        
+    def run(self):
+        try:
+            # 获取所有有完整物流数据的快递
+            sql = """
+            SELECT id, tracking_number, company_code, company_name, result_data, created_at
+            FROM express_summary 
+            WHERE is_deleted = 0 
+            AND result_data IS NOT NULL 
+            AND result_data != ''
+            """
+            records = self.db_manager.execute_query(sql)
+            
+            if not records:
+                if DEBUG_MODE:
+                    print("[重建全部] 没有找到可用的快递数据")
+                self.finished.emit(True, "没有找到可用的快递数据")
+                return
+            
+            total = len(records)
+            
+            if DEBUG_MODE:
+                print(f"[重建全部] 开始扫描，共 {total} 条快递记录")
+            
+            self.status.emit(f"正在扫描 {total} 条快递记录...")
+            
+            # 清空现有数据
+            self.db_manager.execute_update("DELETE FROM delivery_history")
+            self.db_manager.execute_update("DELETE FROM node_transit_history")
+            
+            if DEBUG_MODE:
+                print("[重建全部] 已清空 delivery_history 和 node_transit_history 表")
+            
+            # 创建分析器
+            estimator = DeliveryTimeEstimator(self.db_manager)
+            analyzer = LogisticsNodeAnalyzer(self.db_manager)
+            
+            delivery_count = 0
+            node_count = 0
+            skip_count = 0
+            error_count = 0
+            
+            for i, record in enumerate(records):
+                try:
+                    result_data = record.get('result_data', '')
+                    if not result_data:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建全部] 跳过 {record.get('tracking_number', '')}: result_data 为空")
+                        continue
+                    
+                    data = json.loads(result_data)
+                    track_list = data.get('data', [])
+                    
+                    if len(track_list) >= 2:
+                        # 记录时效数据
+                        estimator.record_delivery(data)
+                        delivery_count += 1
+                        
+                        # 记录节点数据
+                        analyzer.record_node_transit(data)
+                        node_count += 1
+                        
+                        if DEBUG_MODE:
+                            print(f"[重建全部] 成功处理 {record.get('tracking_number', '')}")
+                    else:
+                        skip_count += 1
+                        if DEBUG_MODE:
+                            print(f"[重建全部] 跳过 {record.get('tracking_number', '')}: 轨迹不足2条")
+                        
+                except json.JSONDecodeError as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建全部] JSON解析失败 {record.get('tracking_number', '')}: {e}")
+                except Exception as e:
+                    error_count += 1
+                    if DEBUG_MODE:
+                        print(f"[重建全部] 处理记录 {record.get('tracking_number', '')} 失败: {e}")
+                    continue
+                
+                # 更新进度
+                progress_val = int((i + 1) / total * 100)
+                self.progress.emit(progress_val)
+                self.status.emit(f"已处理 {i+1}/{total} 条记录 | 时效: {delivery_count} | 节点: {node_count}")
+            
+            if DEBUG_MODE:
+                print(f"[重建全部] 完成统计:")
+                print(f"  总记录数: {total}")
+                print(f"  时效数据: {delivery_count}")
+                print(f"  节点数据: {node_count}")
+                print(f"  跳过记录: {skip_count}")
+                print(f"  错误记录: {error_count}")
+            
+            self.finished.emit(True, f"重建完成！\n扫描 {total} 条记录\n时效数据: {delivery_count} 条\n节点数据: {node_count} 条")
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                import traceback
+                print(f"[重建全部] 异常: {e}")
+                traceback.print_exc()
+            self.finished.emit(False, f"重建失败：{str(e)}")
+
+class BatchExportDialog(QDialog):
+    """批量导出快递单号选择对话框"""
+    
+    def __init__(self, numbers: List[Dict], parent=None):
+        super().__init__(parent)
+        self.all_numbers = numbers
+        self.selected_numbers = []
+        self.init_ui()
+        self.load_numbers()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+    
+    def init_ui(self):
+        self.setWindowTitle("批量导出快递单号")
+        self.setMinimumSize(700, 500)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # 导出格式选择
+        format_group = QGroupBox("导出格式")
+        format_layout = QHBoxLayout()
+        
+        format_layout.addWidget(QLabel("选择导出格式："))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems([
+            "纯文本 (.txt) - 每行一个单号",
+            "CSV文件 (.csv) - 包含详细信息",
+            "JSON文件 (.json) - 结构化数据"
+        ])
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        
+        format_group.setLayout(format_layout)
+        layout.addWidget(format_group)
+        
+        # 筛选工具栏
+        filter_widget = QWidget()
+        filter_layout = QHBoxLayout(filter_widget)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        
+        filter_layout.addWidget(QLabel("🔍 筛选："))
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("输入单号或公司名称筛选...")
+        self.filter_edit.textChanged.connect(self.apply_filter)
+        filter_layout.addWidget(self.filter_edit)
+        
+        # 分类筛选
+        filter_layout.addWidget(QLabel("分类："))
+        self.category_combo = QComboBox()
+        self.category_combo.addItem("全部")
+        self.category_combo.currentTextChanged.connect(self.apply_filter)
+        filter_layout.addWidget(self.category_combo)
+        
+        layout.addWidget(filter_widget)
+        
+        # 单号列表
+        list_group = QGroupBox("选择要导出的快递单号")
+        list_layout = QVBoxLayout()
+        
+        # 工具栏
+        toolbar = QHBoxLayout()
+        
+        self.select_all_check = QCheckBox("全选")
+        self.select_all_check.stateChanged.connect(self.on_select_all)
+        toolbar.addWidget(self.select_all_check)
+        
+        self.invert_select_btn = QPushButton("反选")
+        self.invert_select_btn.clicked.connect(self.on_invert_selection)
+        toolbar.addWidget(self.invert_select_btn)
+        
+        toolbar.addStretch()
+        
+        self.stats_label = QLabel()
+        toolbar.addWidget(self.stats_label)
+        
+        list_layout.addLayout(toolbar)
+        
+        # 表格
+        self.numbers_table = QTableWidget()
+        self.numbers_table.setColumnCount(5)
+        self.numbers_table.setHorizontalHeaderLabels(["选择", "快递单号", "快递公司", "状态", "分类"])
+        self.numbers_table.horizontalHeader().setStretchLastSection(True)
+        self.numbers_table.setAlternatingRowColors(True)
+        self.numbers_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.numbers_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        
+        # 设置列宽
+        self.numbers_table.setColumnWidth(0, 50)
+        self.numbers_table.setColumnWidth(1, 180)
+        self.numbers_table.setColumnWidth(2, 120)
+        self.numbers_table.setColumnWidth(3, 100)
+        
+        list_layout.addWidget(self.numbers_table)
+        list_group.setLayout(list_layout)
+        layout.addWidget(list_group)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        export_btn = QPushButton("📤 导出选中")
+        export_btn.clicked.connect(self.accept)
+        export_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        btn_layout.addWidget(export_btn)
+        
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def load_numbers(self):
+        """加载单号列表"""
+        # 收集所有分类
+        categories = set()
+        for num in self.all_numbers:
+            categories.add(num['category'])
+        
+        # 清空并添加分类选项（保留"全部"）
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItem("全部")
+        self.category_combo.addItems(sorted(categories))
+        self.category_combo.blockSignals(False)
+        
+        self.update_table(self.all_numbers)
+    
+    def update_table(self, numbers: List[Dict]):
+        """更新表格"""
+        self.numbers_table.setRowCount(len(numbers))
+        
+        for row, item in enumerate(numbers):
+            # 创建复选框
+            check_box = QCheckBox()
+            check_box.setProperty("number_data", item)
+            # 使用 lambda 捕获当前的复选框
+            check_box.stateChanged.connect(lambda state, cb=check_box: self.on_single_check_changed(cb))
+            
+            # 将复选框放入容器以实现居中
+            check_widget = QWidget()
+            check_layout = QHBoxLayout(check_widget)
+            check_layout.setContentsMargins(0, 0, 0, 0)
+            check_layout.setAlignment(Qt.AlignCenter)
+            check_layout.addWidget(check_box)
+            
+            self.numbers_table.setCellWidget(row, 0, check_widget)
+            self.numbers_table.setItem(row, 1, QTableWidgetItem(item['number']))
+            self.numbers_table.setItem(row, 2, QTableWidgetItem(item['company']))
+            self.numbers_table.setItem(row, 3, QTableWidgetItem(item['status']))
+            self.numbers_table.setItem(row, 4, QTableWidgetItem(item['category']))
+        
+        self.update_stats()
+        self.update_select_all_state()
+    
+    def get_all_checkboxes(self) -> List[QCheckBox]:
+        """获取表格中所有的复选框"""
+        checkboxes = []
+        for row in range(self.numbers_table.rowCount()):
+            check_widget = self.numbers_table.cellWidget(row, 0)
+            if check_widget:
+                # 从布局中获取复选框
+                for i in range(check_widget.layout().count()):
+                    widget = check_widget.layout().itemAt(i).widget()
+                    if isinstance(widget, QCheckBox):
+                        checkboxes.append(widget)
+                        break
+        return checkboxes
+    
+    def apply_filter(self):
+        """应用筛选"""
+        filter_text = self.filter_edit.text().strip().lower()
+        filter_category = self.category_combo.currentText()
+        
+        filtered = []
+        for num in self.all_numbers:
+            # 分类筛选
+            if filter_category != "全部" and num['category'] != filter_category:
+                continue
+            
+            # 文本筛选
+            if filter_text:
+                if filter_text not in num['number'].lower() and filter_text not in num['company'].lower():
+                    continue
+            
+            filtered.append(num)
+        
+        self.update_table(filtered)
+    
+    def on_select_all(self, state):
+        """全选/取消全选"""
+        # 获取实际的选中状态
+        checked = (state == Qt.Checked.value or state == Qt.Checked)
+        
+        # 阻止信号循环
+        self.select_all_check.blockSignals(True)
+        
+        checkboxes = self.get_all_checkboxes()
+        for check_box in checkboxes:
+            check_box.blockSignals(True)
+            check_box.setChecked(checked)
+            check_box.blockSignals(False)
+        
+        self.select_all_check.blockSignals(False)
+        self.update_stats()
+    
+    def on_invert_selection(self):
+        """反选"""
+        checkboxes = self.get_all_checkboxes()
+        for check_box in checkboxes:
+            check_box.blockSignals(True)
+            check_box.setChecked(not check_box.isChecked())
+            check_box.blockSignals(False)
+        
+        self.update_stats()
+        self.update_select_all_state()
+    
+    def on_single_check_changed(self, check_box: QCheckBox):
+        """单个复选框状态改变"""
+        # 防止递归
+        check_box.blockSignals(True)
+        check_box.blockSignals(False)
+        self.update_stats()
+        self.update_select_all_state()
+    
+    def update_select_all_state(self):
+        """更新全选复选框状态"""
+        checkboxes = self.get_all_checkboxes()
+        if not checkboxes:
+            self.select_all_check.setChecked(False)
+            return
+        
+        checked_count = sum(1 for cb in checkboxes if cb.isChecked())
+        total = len(checkboxes)
+        
+        # 阻止信号避免循环
+        self.select_all_check.blockSignals(True)
+        if checked_count == total:
+            self.select_all_check.setCheckState(Qt.Checked)
+        elif checked_count == 0:
+            self.select_all_check.setCheckState(Qt.Unchecked)
+        else:
+            self.select_all_check.setCheckState(Qt.PartiallyChecked)
+        self.select_all_check.blockSignals(False)
+    
+    def update_stats(self):
+        """更新统计信息"""
+        checkboxes = self.get_all_checkboxes()
+        total = len(checkboxes)
+        checked_count = sum(1 for cb in checkboxes if cb.isChecked())
+        self.stats_label.setText(f"共 {total} 个，选中 {checked_count} 个")
+    
+    def get_selected_numbers(self) -> List[Dict]:
+        """获取选中的单号"""
+        selected = []
+        checkboxes = self.get_all_checkboxes()
+        for check_box in checkboxes:
+            if check_box.isChecked():
+                data = check_box.property("number_data")
+                if data:
+                    selected.append(data)
+        return selected
+    
+    def get_export_format(self) -> str:
+        """获取导出格式"""
+        index = self.format_combo.currentIndex()
+        formats = ['txt', 'csv', 'json']
+        return formats[index]
+
 def main():
     """主函数"""
     app = QApplication(sys.argv)
@@ -8493,6 +11984,7 @@ def main():
     window.show()
     
     sys.exit(app.exec())
+
 
 if __name__ == '__main__':
     main()
