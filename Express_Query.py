@@ -1,4 +1,5 @@
 # Express_Query_Pro.py - 完整版（增强站点分析功能）
+
 import sys
 import os
 import hashlib
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import (
     Qt, QThread, Signal, QTimer, QSize, QByteArray, QBuffer, QIODevice,
-    QDate, QUrl, QRect, QObject
+    QDate, QUrl, QRect, QObject, QPropertyAnimation, QEasingCurve
 )
 
 from PySide6.QtGui import (
@@ -51,7 +52,7 @@ APP_DIR = get_app_dir()
 # ==================== 项目信息元数据 ====================
 class ProjectInfo:
     """项目信息元数据（集中管理所有项目相关信息）"""
-    VERSION = "1.1.54"  # 更新版本号
+    VERSION = "1.1.71"  # 更新版本号
     BUILD_DATE = "2026-04-12"
     AUTHOR = "杜玛"
     LICENSE = "GNU Affero General Public License v3.0"
@@ -634,6 +635,83 @@ class MacaronStyle:
             }}
         """
 
+# ==================== 带状态栏的对话框基类 ====================
+class DialogWithStatusBar(QDialog):
+    """带状态栏的对话框基类"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._status_bar = None
+        self._progress_bar = None
+    
+    def setup_status_bar(self, main_layout: QVBoxLayout):
+        """在布局底部添加状态栏"""
+        # 创建状态栏
+        self._status_bar = QStatusBar()
+        self._status_bar.setMinimumHeight(28)
+        self._status_bar.setStyleSheet(f"""
+            QStatusBar {{
+                background-color: {MacaronColors.NEUTRAL_CREAM.name()};
+                color: {MacaronColors.TEXT_MEDIUM.name()};
+                border-top: 1px solid {MacaronColors.BORDER_LIGHT.name()};
+            }}
+        """)
+        
+        # 添加进度条（默认隐藏）
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setMaximumWidth(200)
+        self._progress_bar.setMinimumHeight(18)
+        self._progress_bar.setMaximumHeight(22)
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {MacaronColors.BORDER_MEDIUM.name()};
+                border-radius: 3px;
+                background-color: #E8E8E8;
+                text-align: center;
+                color: {MacaronColors.TEXT_DARK.name()};
+                font-weight: bold;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {MacaronColors.GREEN_APPLE.name()},
+                    stop:0.5 {MacaronColors.BLUE_SKY.name()},
+                    stop:1 {MacaronColors.ORANGE_PEACH.name()});
+                border-radius: 2px;
+                margin: 1px;
+            }}
+        """)
+        self._status_bar.addPermanentWidget(self._progress_bar)
+        
+        main_layout.addWidget(self._status_bar)
+    
+    def show_status(self, message: str, duration: int = 3000):
+        """显示状态栏消息"""
+        if self._status_bar:
+            self._status_bar.showMessage(message, duration)
+    
+    def clear_status(self):
+        """清除状态栏消息"""
+        if self._status_bar:
+            self._status_bar.clearMessage()
+    
+    def show_progress(self, visible: bool = True):
+        """显示/隐藏进度条"""
+        if self._progress_bar:
+            self._progress_bar.setVisible(visible)
+    
+    def set_progress(self, value: int, maximum: int = 100):
+        """设置进度条值"""
+        if self._progress_bar:
+            self._progress_bar.setMaximum(maximum)
+            self._progress_bar.setValue(value)
+            self._progress_bar.setVisible(True)
+    
+    def set_progress_indeterminate(self):
+        """设置进度条为不确定模式（旋转）"""
+        if self._progress_bar:
+            self._progress_bar.setMaximum(0)
+            self._progress_bar.setVisible(True)
 
 class DatabaseManagerPro:
     """数据库管理器 - 支持多用户独立数据库"""
@@ -868,20 +946,29 @@ class LogisticsNodeAnalyzer:
             context = track.get('context', '')
             time_str = track.get('time', '')
             
-            if not time_str:
-                continue
-                
+            if not time_str: continue
             try:
                 time_dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
             except:
                 continue
             
-            # 识别节点信息
+            # 1. 提取快递员信息 (不影响站点判断)
+            courier_info = self._extract_courier_info(context)
+            
+            # 2. 识别站点名称 (核心优化)
+            site_name = self._extract_site_name_enhanced(context)
+            
+            # 3. 识别节点类型和动作类型
             node_type = self._identify_node_type(context)
             action_type = self._identify_action_type(context)
+            
+            # 4. 如果站点为空，根据动作类型兜底提取
+            if not site_name:
+                site_name = self._extract_site_by_action(context, action_type)
+
             city = self._extract_city(context)
-            site_name = self._extract_site_name(context)
-            courier_info = self._extract_courier_info(context)
+            # site_name = self._extract_site_name(context)
+            # courier_info = self._extract_courier_info(context)
             
             nodes.append({
                 'time': time_dt,
@@ -913,26 +1000,88 @@ class LogisticsNodeAnalyzer:
                 if not re.match(r'\d{4}-\d{2}-\d{2}', match) and '电话' not in match:
                     return match.strip()
         return ""
-    
+
+    def _extract_site_name_enhanced(self, context: str) -> str:
+        """
+        增强版站点名称提取
+        支持：【站点名】、站点名[电话]、站点名-人名(电话) 等格式
+        """
+        # 1. 优先提取【】内的内容（通常是核心站点名）
+        # 处理类似：【广州市】广东广州海珠区名粤公司[020-22049077]
+        bracket_match = re.search(r'【[^】]*】\s*([^\[\s]+(?:公司|网点|分部|中心|仓|部|站))', context)
+        if bracket_match:
+            base_site = bracket_match.group(1).strip()
+            # 尝试把后面的 -人名 或者 [电话] 也作为站点名的一部分保留
+            # 匹配模式：站点名 - 人名 (电话) 或 站点名[电话]
+            full_match = re.search(r'([^\[\s]+(?:公司|网点|分部|中心|仓|部|站)(?:-[^\[\s]+)?)', context)
+            if full_match:
+                return full_match.group(1).strip()
+            return base_site
+
+        # 2. 如果没有【】，提取带有明显站点后缀的词组，允许包含 [电话] 或 -人名
+        # 例如：广东广州海珠区名粤公司[020-22049077] 或 浙江平阳县公司-王龙再（0577-28784350）
+        pattern = r'([^\s，。；]*?(?:公司|网点|分部|中心|仓|部|站|投递部|揽投部)(?:-\S+)?(?:\[\S+\])?(?:（\S+）)?)'
+        matches = re.findall(pattern, context)
+        if matches:
+            # 过滤掉太短或者纯数字的
+            for m in matches:
+                if len(m) > 3 and not m.isdigit():
+                    # 特殊处理：如果提取的内容包含了电话号码，尽量保留完整结构
+                    # 去除末尾可能的标点
+                    return m.strip('。，； ')
+        
+        return ""
+
+    def _extract_site_by_action(self, context: str, action_type: str) -> str:
+        """
+        当正则提取不到站点时，根据动作关键词提取前后文
+        """
+        # 到达类
+        if action_type == 'arrive':
+            # 已到达 XXX
+            match = re.search(r'已到达\s*([^\s，。；]*?(?:公司|中心|网点|仓|部|站))', context)
+            if match: return match.group(1)
+        # 离开类
+        elif action_type == 'depart':
+            # 已离开 XXX 发往 YYY
+            # 优先提取“离开”和“发往”之间的内容
+            match = re.search(r'已离开\s*([^\s发]*?(?:公司|中心|网点|仓|部|站))', context)
+            if match: return match.group(1)
+        # 揽收类
+        elif action_type == 'pickup':
+            # XXX 已揽收
+            match = re.search(r'([^\s，。；]*?(?:公司|网点|分部|仓|部|站)).*?已揽收', context)
+            if match: return match.group(1)
+            
+        return ""
+
+
     def _extract_courier_info(self, context: str) -> Dict:
-        """提取揽收员/快递员信息"""
+        """提取揽收员/快递员信息（优化版）"""
         info = {'name': '', 'phone': ''}
         
-        # 提取姓名和电话
+        # 1. 提取姓名
+        # 匹配模式：快递员 张三、揽收员 李四、-王五、派件员 赵六
         name_patterns = [
-            r'揽收员([^（(]+)',
-            r'快递员[【]?([^】】]+)',
-            r'派件员[【]?([^】】]+)'
+            r'快递员[：:\s]*([^\s\d（(]+)',  # 快递员 刘健锋
+            r'揽收员[：:\s]*([^\s\d（(]+)',
+            r'派件员[：:\s]*([^\s\d（(]+)',
+            r'[-－]\s*([^\s\d（(]+)',       # -王龙再
         ]
-        phone_pattern = r'电话[:：]?(\d{11})'
-        
         for pattern in name_patterns:
-            name_match = re.search(pattern, context)
-            if name_match:
-                info['name'] = name_match.group(1).strip()
-                break
-        
-        phone_match = re.search(phone_pattern, context)
+            match = re.search(pattern, context)
+            if match:
+                name = match.group(1).strip()
+                # 过滤掉一些误判（如“正在”）
+                if name and len(name) >= 2 and not any(kw in name for kw in ['正在', '为你', '如有']):
+                    info['name'] = name
+                    break
+
+        # 2. 提取电话
+        # 支持格式：18521190082、(18521190082)、[18521190082]、电话:18521190082
+        phone_match = re.search(r'[（(]?(\d{11})[）)]?', context)
+        if not phone_match:
+            phone_match = re.search(r'电话[:：]?\s*(\d{11})', context)
         if phone_match:
             info['phone'] = phone_match.group(1)
             
@@ -942,72 +1091,404 @@ class LogisticsNodeAnalyzer:
         """识别节点类型"""
         context_lower = context.lower()
         
-        # 转运中心/分拨中心
+        # 转运中心/分拨中心/处理中心
         if any(kw in context_lower or kw in context for kw in 
-               ['转运中心', '分拨中心', '处理中心', '中转中心', '分拣中心', '转运站',
-                '包件车间', '直投中心', '投递部', '揽投部']):
+            ['转运中心', '分拨中心', '处理中心', '中转中心', '分拣中心', '转运站',
+                '包件车间', '直投中心', '投递部', '揽投部', '网格仓', '集散中心',
+                '中转站', '分拨站', '集散点', '枢纽', '中转场', '航空部', '陆运部',
+                '中转部', '分拣部', '操作中心', '运作中心', '集散中心', '分拨部']):
             return 'transit_center'
-        # 营业点/网点
+        
+        # 营业点/网点/分部
         if any(kw in context_lower or kw in context for kw in 
-               ['营业点', '网点', '服务点', '分公司', '分部', '营业部']):
+            ['营业点', '网点', '服务点', '分公司', '分部', '营业部', '营业厅',
+                '服务部', '服务站', '服务网点', '揽收点', '收件点', '派件点',
+                '快递点', '快递站', '收派点', '营业处', '代办点', '服务处']):
             return 'service_point'
-        # 驿站/代收点
+        
+        # 驿站/代收点/快递柜
         if any(kw in context_lower or kw in context for kw in 
-               ['驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站',
-                '店', '超市', '代理点']):
+            ['驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站',
+                '店', '超市', '代理点', '兔喜', '快递超市', '邻里驿站', '熊猫快收',
+                '速递易', '云柜', '日日顺', '蜂巢', 'e栈', '收件宝', '近邻宝',
+                '格格货栈', '乐收', '菜鸟驿站', '菜鸟裹裹', '自提点', '代收站',
+                '便利店', '物业', '门卫', '传达室', '收发室', '智能柜', '快递箱']):
             return 'pickup_point'
-        # 机场
-        if any(kw in context_lower or kw in context for kw in ['机场', '航空']):
+        
+        # 机场/航空
+        if any(kw in context_lower or kw in context for kw in 
+            ['机场', '航空', '航站楼', '空港', '航班', '起飞', '降落',
+                '航空部', '空运', '航运']):
             return 'airport'
-        # 火车站
-        if '火车站' in context or '高铁' in context:
+        
+        # 火车站/铁路
+        if any(kw in context_lower or kw in context for kw in 
+            ['火车站', '高铁', '铁路', '动车', '列车', '车次', '站台']):
             return 'railway'
+        
+        # 港口/码头
+        if any(kw in context_lower or kw in context for kw in 
+            ['港口', '码头', '港区', '海运', '船舶', '集装箱码头']):
+            return 'port'
+        
+        # 海关
+        if any(kw in context_lower or kw in context for kw in 
+            ['海关', '报关', '清关', '通关', '检验检疫', '商检']):
+            return 'customs'
+        
+        # 仓库
+        if any(kw in context_lower or kw in context for kw in 
+            ['仓库', '仓储', '库房', '备件库', '存货区', '存储区']):
+            return 'warehouse'
+        
         return 'unknown'
-    
+
+
     def _identify_action_type(self, context: str) -> str:
         """识别动作类型"""
         context_lower = context.lower()
         
+        # 揽收/收件
+        if any(kw in context_lower or kw in context for kw in 
+            ['揽收', '已揽件', '收件', '取件', '已取件', '已揽收', '揽件',
+                '收寄', '已收寄', '上门取件', '已接单', '待取件', '预约取件',
+                '取件成功', '揽收成功', '已收件']):
+            return 'pickup'
+        
         # 到达
         if any(kw in context_lower or kw in context for kw in 
-               ['到达', '已到达', '抵达', '进站', '到件', '到站']):
+            ['到达', '已到达', '抵达', '进站', '到件', '到站', '已到',
+                '到达处理中心', '到达营业点', '到达网点', '抵达转运中心',
+                '到达中转站', '已抵达', '到达分拨中心']):
             return 'arrive'
+        
         # 离开/发出
         if any(kw in context_lower or kw in context for kw in 
-               ['离开', '发出', '发往', '发件', '出站', '出库', '已发出']):
+            ['离开', '发出', '发往', '发件', '出站', '出库', '已发出', '转运到',
+                '已离开', '离开处理中心', '发往下一站', '送往', '运往', '寄往',
+                '已发往', '出发', '启程', '装车发出', '发车']):
             return 'depart'
-        # 派送
+        
+        # 派送/派件
         if any(kw in context_lower or kw in context for kw in 
-               ['派送', '派件', '投递', '快递员派送', '正在派送']):
+            ['派送', '派件', '投递', '快递员派送', '正在派送', '正在为您派件',
+                '派送中', '派件中', '投递中', '正在投递', '派件员', '快递员',
+                '开始派送', '安排派送', '预约派送', '派送员']):
             return 'delivering'
+        
         # 签收
         if any(kw in context_lower or kw in context for kw in 
-               ['签收', '已签收', '妥投', '本人签收']):
+            ['签收', '已签收', '妥投', '本人签收', '他人签收', '快递员签收',
+                '已妥投', '签收成功', '已收件人签收', '已签收完成', '代收',
+                '家人代收', '同事代收', '前台代收', '物业代收']):
             return 'signed'
-        # 揽收
-        if any(kw in context_lower or kw in context for kw in 
-               ['揽收', '已揽件', '收件', '取件', '已取件']):
-            return 'pickup'
+        
         # 已派送至驿站/代收点
         if any(kw in context_lower or kw in context for kw in 
-               ['已派送至', '派送至', '投递至']):
+            ['已派送至', '派送至', '投递至', '已放入', '存入', '入柜',
+                '投柜', '已投柜', '放入快递柜', '放入丰巢', '放入驿站',
+                '到达驿站', '已到驿站', '可取件', '待取件', '请取件',
+                '凭取件码', '取件码', '已送达']):
             return 'arrived_pickup'
-        return 'status'
-    
-    def _extract_city(self, context: str) -> str:
-        """从上下文提取城市名"""
-        # 常见城市列表
-        cities = ['北京', '上海', '广州', '深圳', '杭州', '南京', '武汉', '成都', '重庆',
-                  '天津', '苏州', '西安', '郑州', '长沙', '青岛', '济南', '合肥', '福州',
-                  '厦门', '宁波', '大连', '沈阳', '哈尔滨', '长春', '昆明', '南宁', '贵阳',
-                  '太原', '石家庄', '南昌', '乌鲁木齐', '兰州', '呼和浩特', '银川', '西宁',
-                  '海口', '三亚', '珠海', '佛山', '东莞', '惠州', '中山', '江门', '湛江',
-                  '无锡', '常州', '南通', '扬州', '镇江', '徐州', '温州', '绍兴', '嘉兴',
-                  '金华', '台州', '泉州', '漳州', '莆田', '龙岩', '烟台', '威海', '潍坊']
         
+        # 疑难/异常
+        if any(kw in context_lower or kw in context for kw in 
+            ['疑难', '异常', '滞留', '超时', '未妥投', '问题件', '疑难件',
+                '地址不详', '电话不通', '无法联系', '拒收', '改地址', '退回',
+                '投递失败', '派送失败']):
+            return 'problem'
+        
+        # 退回
+        if any(kw in context_lower or kw in context for kw in 
+            ['退回', '退件', '退签', '退货', '返程', '原路返回', '退件中',
+                '已退回', '退回寄件人', '退回处理']):
+            return 'returned'
+        
+        # 清关相关
+        if any(kw in context_lower or kw in context for kw in 
+            ['清关', '报关', '通关', '海关查验', '海关放行', '待清关',
+                '清关中', '已清关', '海关扣留', '海关申报']):
+            return 'customs'
+        
+        # 中转/转运
+        if any(kw in context_lower or kw in context for kw in 
+            ['中转', '转运', '经转', '转站', '换站']):
+            return 'transit'
+        
+        # 装车/卸车
+        if any(kw in context_lower or kw in context for kw in 
+            ['装车', '已装车', '装车扫描', '装车发出']):
+            return 'loading'
+        
+        if any(kw in context_lower or kw in context for kw in 
+            ['卸车', '已卸车', '卸车扫描', '到车']):
+            return 'unloading'
+        
+        # 分拣/扫描
+        if any(kw in context_lower or kw in context for kw in 
+            ['分拣', '扫描', '已扫描', '分拣完成', '建包', '拆包',
+                '打包', '称重', '安检']):
+            return 'processing'
+        
+        # 运输中
+        if any(kw in context_lower or kw in context for kw in 
+            ['运输中', '在途', '途中', '运送中', '正在运输']):
+            return 'in_transit'
+        
+        # 起飞/降落（航空件）
+        if any(kw in context_lower or kw in context for kw in 
+            ['起飞', '已起飞', '航班起飞']):
+            return 'takeoff'
+        
+        if any(kw in context_lower or kw in context for kw in 
+            ['降落', '已降落', '航班降落', '到达机场']):
+            return 'landing'
+        
+        # 状态更新/其他
+        if any(kw in context_lower or kw in context for kw in 
+            ['状态', '更新', '信息', '通知', '备注']):
+            return 'status'
+        
+        return 'other'
+
+
+    def _extract_city(self, context: str) -> str:
+        """从上下文提取城市名（增强版 - 支持更多城市和提取方式）"""
+        # 中国主要城市列表（按人口和经济重要性排序）
+        cities = [
+            # 直辖市
+            '北京', '北京市', '上海', '上海市', '天津', '天津市', '重庆', '重庆市',
+            
+            # 省会城市
+            '广州', '广州市', '深圳', '深圳市', '杭州', '杭州市', '南京', '南京市',
+            '武汉', '武汉市', '成都', '成都市', '西安', '西安市', '郑州', '郑州市',
+            '长沙', '长沙市', '青岛', '青岛市', '济南', '济南市', '合肥', '合肥市',
+            '福州', '福州市', '厦门', '厦门市', '宁波', '宁波市', '大连', '大连市',
+            '沈阳', '沈阳市', '哈尔滨', '哈尔滨市', '长春', '长春市', '昆明', '昆明市',
+            '南宁', '南宁市', '贵阳', '贵阳市', '太原', '太原市', '石家庄', '石家庄市',
+            '南昌', '南昌市', '乌鲁木齐', '乌鲁木齐市', '兰州', '兰州市', '呼和浩特',
+            '呼和浩特市', '银川', '银川市', '西宁', '西宁市', '海口', '海口市',
+            '三亚', '三亚市', '拉萨', '拉萨市',
+            
+            # 重要地级市/经济强市
+            '珠海', '珠海市', '佛山', '佛山市', '东莞', '东莞市', '惠州', '惠州市',
+            '中山', '中山市', '江门', '江门市', '湛江', '湛江市', '茂名', '茂名市',
+            '肇庆', '肇庆市', '汕头', '汕头市', '潮州', '潮州市', '揭阳', '揭阳市',
+            '汕尾', '汕尾市', '梅州', '梅州市', '河源', '河源市', '清远', '清远市',
+            '韶关', '韶关市', '阳江', '阳江市', '云浮', '云浮市',
+            
+            # 江苏省
+            '无锡', '无锡市', '常州', '常州市', '南通', '南通市', '扬州', '扬州市',
+            '镇江', '镇江市', '徐州', '徐州市', '盐城', '盐城市', '淮安', '淮安市',
+            '连云港', '连云港市', '泰州', '泰州市', '宿迁', '宿迁市', '苏州', '苏州市',
+            '昆山', '昆山市', '江阴', '江阴市', '宜兴', '宜兴市', '常熟', '常熟市',
+            '张家港', '张家港市', '太仓', '太仓市',
+            
+            # 浙江省
+            '温州', '温州市', '绍兴', '绍兴市', '嘉兴', '嘉兴市', '金华', '金华市',
+            '台州', '台州市', '湖州', '湖州市', '衢州', '衢州市', '丽水', '丽水市',
+            '舟山', '舟山市', '义乌', '义乌市', '慈溪', '慈溪市', '余姚', '余姚市',
+            
+            # 福建省
+            '泉州', '泉州市', '漳州', '漳州市', '莆田', '莆田市', '龙岩', '龙岩市',
+            '三明', '三明市', '南平', '南平市', '宁德', '宁德市', '晋江', '晋江市',
+            '福清', '福清市',
+            
+            # 山东省
+            '烟台', '烟台市', '威海', '威海市', '潍坊', '潍坊市', '淄博', '淄博市',
+            '临沂', '临沂市', '济宁', '济宁市', '泰安', '泰安市', '聊城', '聊城市',
+            '德州', '德州市', '滨州', '滨州市', '东营', '东营市', '菏泽', '菏泽市',
+            '日照', '日照市', '枣庄', '枣庄市',
+            
+            # 河南省
+            '洛阳', '洛阳市', '南阳', '南阳市', '许昌', '许昌市', '周口', '周口市',
+            '新乡', '新乡市', '商丘', '商丘市', '驻马店', '驻马店市', '信阳', '信阳市',
+            '开封', '开封市', '平顶山', '平顶山市', '安阳', '安阳市', '焦作', '焦作市',
+            '濮阳', '濮阳市', '漯河', '漯河市', '三门峡', '三门峡市', '鹤壁', '鹤壁市',
+            
+            # 河北省
+            '唐山', '唐山市', '邯郸', '邯郸市', '保定', '保定市', '沧州', '沧州市',
+            '邢台', '邢台市', '廊坊', '廊坊市', '张家口', '张家口市', '承德', '承德市',
+            '秦皇岛', '秦皇岛市', '衡水', '衡水市',
+            
+            # 湖北省
+            '襄阳', '襄阳市', '宜昌', '宜昌市', '荆州', '荆州市', '黄冈', '黄冈市',
+            '孝感', '孝感市', '十堰', '十堰市', '荆门', '荆门市', '黄石', '黄石市',
+            '咸宁', '咸宁市', '随州', '随州市', '鄂州', '鄂州市', '恩施', '恩施市',
+            
+            # 湖南省
+            '株洲', '株洲市', '湘潭', '湘潭市', '衡阳', '衡阳市', '邵阳', '邵阳市',
+            '岳阳', '岳阳市', '常德', '常德市', '张家界', '张家界市', '益阳', '益阳市',
+            '郴州', '郴州市', '永州', '永州市', '怀化', '怀化市', '娄底', '娄底市',
+            '湘西', '吉首市',
+            
+            # 广东省更多
+            '河源', '河源市', '阳江', '阳江市', '清远', '清远市', '梅州', '梅州市',
+            '揭阳', '揭阳市', '茂名', '茂名市', '湛江', '湛江市', '韶关', '韶关市',
+            '汕尾', '汕尾市', '潮州', '潮州市', '云浮', '云浮市',
+            
+            # 四川省
+            '绵阳', '绵阳市', '德阳', '德阳市', '宜宾', '宜宾市', '南充', '南充市',
+            '泸州', '泸州市', '达州', '达州市', '乐山', '乐山市', '凉山', '西昌市',
+            '内江', '内江市', '自贡', '自贡市', '攀枝花', '攀枝花市', '眉山', '眉山市',
+            '遂宁', '遂宁市', '广安', '广安市', '巴中', '巴中市', '资阳', '资阳市',
+            '雅安', '雅安市', '广元', '广元市', '甘孜', '康定市', '阿坝', '马尔康市',
+            
+            # 陕西省
+            '宝鸡', '宝鸡市', '咸阳', '咸阳市', '渭南', '渭南市', '汉中', '汉中市',
+            '榆林', '榆林市', '安康', '安康市', '商洛', '商洛市', '延安', '延安市',
+            '铜川', '铜川市',
+            
+            # 辽宁省
+            '鞍山', '鞍山市', '抚顺', '抚顺市', '本溪', '本溪市', '丹东', '丹东市',
+            '锦州', '锦州市', '营口', '营口市', '阜新', '阜新市', '辽阳', '辽阳市',
+            '盘锦', '盘锦市', '铁岭', '铁岭市', '朝阳', '朝阳市', '葫芦岛', '葫芦岛市',
+            
+            # 吉林省
+            '吉林', '吉林市', '四平', '四平市', '辽源', '辽源市', '通化', '通化市',
+            '白山', '白山市', '松原', '松原市', '白城', '白城市', '延边', '延吉市',
+            
+            # 黑龙江省
+            '齐齐哈尔', '齐齐哈尔市', '鸡西', '鸡西市', '鹤岗', '鹤岗市', '双鸭山',
+            '双鸭山市', '大庆', '大庆市', '伊春', '伊春市', '佳木斯', '佳木斯市',
+            '七台河', '七台河市', '牡丹江', '牡丹江市', '黑河', '黑河市', '绥化',
+            '绥化市', '大兴安岭',
+            
+            # 安徽省
+            '芜湖', '芜湖市', '蚌埠', '蚌埠市', '淮南', '淮南市', '马鞍山', '马鞍山市',
+            '淮北', '淮北市', '铜陵', '铜陵市', '安庆', '安庆市', '黄山', '黄山市',
+            '滁州', '滁州市', '阜阳', '阜阳市', '宿州', '宿州市', '六安', '六安市',
+            '亳州', '亳州市', '池州', '池州市', '宣城', '宣城市',
+            
+            # 江西省
+            '景德镇', '景德镇市', '萍乡', '萍乡市', '九江', '九江市', '新余', '新余市',
+            '鹰潭', '鹰潭市', '赣州', '赣州市', '吉安', '吉安市', '宜春', '宜春市',
+            '抚州', '抚州市', '上饶', '上饶市',
+            
+            # 贵州省
+            '遵义', '遵义市', '六盘水', '六盘水市', '安顺', '安顺市', '毕节', '毕节市',
+            '铜仁', '铜仁市', '黔西南', '兴义市', '黔东南', '凯里市', '黔南', '都匀市',
+            
+            # 云南省
+            '曲靖', '曲靖市', '玉溪', '玉溪市', '保山', '保山市', '昭通', '昭通市',
+            '丽江', '丽江市', '普洱', '普洱市', '临沧', '临沧市', '楚雄', '楚雄市',
+            '红河', '蒙自市', '文山', '文山市', '西双版纳', '景洪市', '大理', '大理市',
+            '德宏', '芒市', '怒江', '泸水市', '迪庆', '香格里拉市',
+            
+            # 甘肃省
+            '嘉峪关', '嘉峪关市', '金昌', '金昌市', '白银', '白银市', '天水', '天水市',
+            '武威', '武威市', '张掖', '张掖市', '平凉', '平凉市', '酒泉', '酒泉市',
+            '庆阳', '庆阳市', '定西', '定西市', '陇南', '陇南市', '临夏', '临夏市',
+            '甘南', '合作市',
+            
+            # 内蒙古自治区
+            '包头', '包头市', '乌海', '乌海市', '赤峰', '赤峰市', '通辽', '通辽市',
+            '鄂尔多斯', '鄂尔多斯市', '呼伦贝尔', '呼伦贝尔市', '巴彦淖尔', '巴彦淖尔市',
+            '乌兰察布', '乌兰察布市', '兴安', '乌兰浩特市', '锡林郭勒', '锡林浩特市',
+            '阿拉善', '阿拉善左旗',
+            
+            # 广西壮族自治区
+            '柳州', '柳州市', '桂林', '桂林市', '梧州', '梧州市', '北海', '北海市',
+            '防城港', '防城港市', '钦州', '钦州市', '贵港', '贵港市', '玉林', '玉林市',
+            '百色', '百色市', '贺州', '贺州市', '河池', '河池市', '来宾', '来宾市',
+            '崇左', '崇左市',
+            
+            # 西藏自治区
+            '日喀则', '日喀则市', '昌都', '昌都市', '林芝', '林芝市', '山南', '山南市',
+            '那曲', '那曲市', '阿里',
+            
+            # 宁夏回族自治区
+            '石嘴山', '石嘴山市', '吴忠', '吴忠市', '固原', '固原市', '中卫', '中卫市',
+            
+            # 新疆维吾尔自治区
+            '克拉玛依', '克拉玛依市', '吐鲁番', '吐鲁番市', '哈密', '哈密市',
+            '昌吉', '昌吉市', '博尔塔拉', '博乐市', '巴音郭楞', '库尔勒市',
+            '阿克苏', '阿克苏市', '克孜勒苏', '阿图什市', '喀什', '喀什市',
+            '和田', '和田市', '伊犁', '伊宁市', '塔城', '塔城市', '阿勒泰', '阿勒泰市',
+            '石河子', '石河子市', '阿拉尔', '阿拉尔市', '图木舒克', '图木舒克市',
+            '五家渠', '五家渠市', '北屯', '北屯市', '铁门关', '铁门关市', '双河', '双河市',
+            '可克达拉', '可克达拉市', '昆玉', '昆玉市', '胡杨河', '胡杨河市',
+            
+            # 海南省更多
+            '三沙', '三沙市', '儋州', '儋州市', '五指山', '五指山市', '琼海', '琼海市',
+            '文昌', '文昌市', '万宁', '万宁市', '东方', '东方市', '定安', '定安县',
+            '屯昌', '屯昌县', '澄迈', '澄迈县', '临高', '临高县', '白沙', '白沙黎族自治县',
+            '昌江', '昌江黎族自治县', '乐东', '乐东黎族自治县', '陵水', '陵水黎族自治县',
+            '保亭', '保亭黎族苗族自治县', '琼中', '琼中黎族苗族自治县',
+            
+            # 青海省
+            '海东', '海东市', '海北', '海晏县', '黄南', '同仁市', '海南', '共和县',
+            '果洛', '玛沁县', '玉树', '玉树市', '海西', '德令哈市',
+            
+            # 台湾省（中国不可分割的一部分）
+            '台北', '台北市', '新北', '新北市', '桃园', '桃园市', '台中', '台中市',
+            '台南', '台南市', '高雄', '高雄市', '基隆', '基隆市', '新竹', '新竹市',
+            '嘉义', '嘉义市',
+            
+            # 香港特别行政区
+            '香港',
+            
+            # 澳门特别行政区
+            '澳门',
+        ]
+        
+        # 1. 优先匹配【】内的城市信息
+        bracket_match = re.search(r'【([^】]+)】', context)
+        if bracket_match:
+            bracket_content = bracket_match.group(1)
+            for city in cities:
+                if city in bracket_content:
+                    # 去掉"市"后缀返回标准城市名
+                    return city.replace('市', '')
+        
+        # 2. 匹配"发往XX"、"到达XX"等模式中的城市
+        patterns = [
+            r'发往\s*([^\s，。；]+(?:市|省|区|县))',
+            r'送往\s*([^\s，。；]+(?:市|省|区|县))',
+            r'运往\s*([^\s，。；]+(?:市|省|区|县))',
+            r'到达\s*([^\s，。；]+(?:市|省|区|县|站|中心|部))',
+            r'离开\s*([^\s，。；]+(?:市|省|区|县))',
+            r'在\s*([^\s，。；]+(?:市|省|区|县))\s*处理',
+            r'([^\s，。；]+(?:市|省))\s*公司',
+            r'([^\s，。；]+(?:市|省))\s*转运中心',
+            r'([^\s，。；]+(?:市|省))\s*分拨中心',
+            r'([^\s，。；]+(?:市|省))\s*网点',
+            r'([^\s，。；]+(?:市|省))\s*营业部',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, context)
+            if match:
+                extracted = match.group(1)
+                # 提取城市名
+                for city in cities:
+                    if city in extracted:
+                        return city.replace('市', '').replace('省', '')
+                # 如果没匹配到，返回提取的内容（去掉常见后缀）
+                extracted = re.sub(r'[省市县区]', '', extracted)
+                if len(extracted) >= 2:
+                    return extracted
+        
+        # 3. 直接在城市列表中匹配
         for city in cities:
             if city in context:
-                return city
+                return city.replace('市', '')
+        
+        # 4. 匹配行政区划代码格式（如"北京市"、"广东省"等）
+        province_match = re.search(r'([^\s，。；]+(?:省|自治区|特别行政区|市))', context)
+        if province_match:
+            province = province_match.group(1)
+            # 如果是省级单位，返回省级名称
+            return province.replace('省', '').replace('自治区', '').replace('特别行政区', '')
+        
+        # 5. 尝试从站点名称中提取城市（如"广东广州海珠区名粤公司"）
+        site_match = re.search(r'([^\s，。；]*?(?:市|县|区))', context)
+        if site_match:
+            location = site_match.group(1)
+            for city in cities:
+                if city in location:
+                    return city.replace('市', '')
+        
         return ""
     
     def calculate_node_transit_times(self, nodes: List[Dict]) -> List[Dict]:
@@ -1055,9 +1536,9 @@ class LogisticsNodeAnalyzer:
     def record_node_transit(self, express_data: Dict):
         """记录节点运输时间到历史库"""
         track_list = express_data.get('data', [])
-        if len(track_list) < 2:
+        if len(track_list) < 1:  # 改为至少1条
             if DEBUG_MODE:
-                print(f"  [跳过] 轨迹不足2条")
+                print(f"  [跳过] 无物流轨迹")
             return
             
         # 获取company_code，确保不为空
@@ -1082,6 +1563,13 @@ class LogisticsNodeAnalyzer:
             print(f"  [记录节点] 单号: {express_data.get('nu', '')}, 公司: {company_code}, 轨迹数: {len(track_list)}")
             
         nodes = self.extract_nodes_from_track(track_list)
+        
+        # 如果只有1个节点，无法计算运输段
+        if len(nodes) < 2:
+            if DEBUG_MODE:
+                print(f"  [跳过] 节点不足2个，无法计算运输段")
+            return
+        
         segments = self.calculate_node_transit_times(nodes)
         
         recorded_count = 0
@@ -1278,6 +1766,7 @@ class LogisticsNodeAnalyzer:
     def estimate_next_stations(self, express_data: Dict) -> List[Dict]:
         """
         根据当前物流状态，预估到达后续各个关键站点的时间
+        支持跨公司数据参考
         """
         track_list = express_data.get('data', [])
         if not track_list:
@@ -1304,72 +1793,92 @@ class LogisticsNodeAnalyzer:
         
         # 如果当前正在派送中
         if current_action == 'delivering':
-            # 预估签收时间
+            # 预估签收时间（不限公司）
             sql = """
-            SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples, company_code
             FROM node_transit_history
-            WHERE company_code = ? AND from_site = ? AND to_action = 'signed'
+            WHERE from_site = ? AND action_type = 'signed'
+            GROUP BY company_code
+            ORDER BY total_samples DESC
+            LIMIT 1
             """
-            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            results = self.db_manager.execute_query(sql, (current_site,))
             if results and results[0]['avg_hours']:
                 avg_hours = results[0]['avg_hours']
                 total_samples = results[0]['total_samples'] or 1
+                is_same = (results[0].get('company_code') == company_code)
+                est_type = "同公司" if is_same else "跨公司参考"
+                
                 estimates.append({
                     'type': 'signed',
-                    'description': f"预计 {avg_hours:.1f} 小时后签收",
+                    'description': f"[{est_type}] 预计 {avg_hours:.1f} 小时后签收",
                     'hours': round(avg_hours, 1),
                     'confidence': total_samples,
-                    'confidence_level': '高' if total_samples >= 3 else ('中' if total_samples >= 1 else '低')
+                    'confidence_level': '高' if total_samples >= 5 else ('中' if total_samples >= 2 else '低'),
+                    'is_same_company': is_same
                 })
         
         # 如果当前在转运中心
-        if current_site and '包件车间' in current_site or '处理中心' in current_site or '转运中心' in current_site:
-            # 查询从该站点出发的常见下一站
+        if current_site and ('包件车间' in current_site or '处理中心' in current_site or '转运中心' in current_site):
+            # 查询从该站点出发的常见下一站（不限公司）
             sql = """
-            SELECT to_site, to_city, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            SELECT to_site, to_city, company_code, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
             FROM node_transit_history
-            WHERE company_code = ? AND from_site = ? AND to_site != ''
-            GROUP BY to_site
+            WHERE from_site = ? AND to_site != ''
+            GROUP BY to_site, to_city, company_code
             ORDER BY total_samples DESC, avg_hours
-            LIMIT 3
+            LIMIT 5
             """
-            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            results = self.db_manager.execute_query(sql, (current_site,))
             for row in results:
                 if row['to_site'] and row['avg_hours']:
                     confidence = row['total_samples'] or 1
+                    is_same = (row['company_code'] == company_code)
+                    est_type = "同公司" if is_same else "跨公司参考"
+                    
                     estimates.append({
                         'type': 'next_station',
                         'next_site': row['to_site'],
                         'city': row['to_city'],
-                        'description': f"预计 {row['avg_hours']:.1f} 小时后到达 {row['to_site']}",
+                        'description': f"[{est_type}] 预计 {row['avg_hours']:.1f} 小时后到达 {row['to_site']}",
                         'hours': round(row['avg_hours'], 1),
                         'confidence': confidence,
-                        'confidence_level': '高' if confidence >= 3 else ('中' if confidence >= 1 else '低')
+                        'confidence_level': '高' if confidence >= 5 else ('中' if confidence >= 2 else '低'),
+                        'is_same_company': is_same,
+                        'company': row['company_code']
                     })
         
         # 通用预估：查询从当前站点出发的所有记录
         if not estimates and current_site:
             sql = """
-            SELECT to_site, to_city, to_action, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+            SELECT to_site, to_city, action_type, company_code, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
             FROM node_transit_history
-            WHERE company_code = ? AND from_site = ?
-            GROUP BY to_site, to_action
+            WHERE from_site = ?
+            GROUP BY to_site, to_city, action_type, company_code
             ORDER BY total_samples DESC, avg_hours
             LIMIT 5
             """
-            results = self.db_manager.execute_query(sql, (company_code, current_site))
+            results = self.db_manager.execute_query(sql, (current_site,))
             for row in results:
                 if row['avg_hours']:
                     confidence = row['total_samples'] or 1
-                    action_text = self._get_action_text(row['to_action'])
+                    action_text = self._get_action_text(row['action_type'])
+                    is_same = (row['company_code'] == company_code)
+                    est_type = "同公司" if is_same else "跨公司参考"
+                    
                     estimates.append({
                         'type': 'general',
                         'next_site': row['to_site'] or '下一站',
-                        'description': f"预计 {row['avg_hours']:.1f} 小时后{action_text}",
+                        'description': f"[{est_type}] 预计 {row['avg_hours']:.1f} 小时后{action_text}",
                         'hours': round(row['avg_hours'], 1),
                         'confidence': confidence,
-                        'confidence_level': '高' if confidence >= 3 else ('中' if confidence >= 1 else '低')
+                        'confidence_level': '高' if confidence >= 5 else ('中' if confidence >= 2 else '低'),
+                        'is_same_company': is_same,
+                        'company': row['company_code']
                     })
+        
+        # 按置信度排序，同公司优先
+        estimates.sort(key=lambda x: (x.get('is_same_company', False), x.get('confidence', 0)), reverse=True)
         
         return estimates
     
@@ -1458,9 +1967,12 @@ class LogisticsNodeAnalyzer:
             'current_site': site_timeline[-1]['site'] if site_timeline else None
         }
 
+
     def analyze_and_estimate(self, express_data: Dict) -> Dict:
         """
         综合分析并预估整个物流过程（增强版）
+        即使节点不足，也尝试从历史数据中预估
+        支持跨公司数据参考
         """
         track_list = express_data.get('data', [])
         if not track_list:
@@ -1468,14 +1980,10 @@ class LogisticsNodeAnalyzer:
             
         company_code = express_data.get('com', '')
         state = express_data.get('state', '')
+        tracking_number = express_data.get('nu', '')
         
         # 提取节点
         nodes = self.extract_nodes_from_track(track_list)
-        if len(nodes) < 2:
-            return {'error': '节点不足，无法分析'}
-            
-        # 计算已发生的段
-        segments = self.calculate_node_transit_times(nodes)
         
         # 记录到历史
         self.record_node_transit(express_data)
@@ -1489,7 +1997,7 @@ class LogisticsNodeAnalyzer:
         # 分析结果
         result = {
             'company_code': company_code,
-            'tracking_number': express_data.get('nu', ''),
+            'tracking_number': tracking_number,
             'state': state,
             'is_signed': state == '3',
             'total_nodes': len(nodes),
@@ -1506,105 +2014,279 @@ class LogisticsNodeAnalyzer:
             'estimations': {
                 'next_stations': next_estimates,
                 'remaining_estimate': None,
-                'final_estimate': None
+                'final_estimate': None,
+                'from_history': [],           # 同公司预估
+                'cross_company_estimates': []  # 跨公司参考
             }
         }
         
-        visited_cities = set()
-        visited_sites = set()
-        total_transit = 0
-        total_dwell = 0
-        
-        # 分析每个段
-        for seg in segments:
-            seg_info = {
-                'from_city': seg['from_city'] or '未知',
-                'to_city': seg['to_city'] or '未知',
-                'from_site': seg['from_site'] or '未知',
-                'to_site': seg['to_site'] or '未知',
-                'hours': seg['hours'],
-                'is_dwell': seg['is_dwell'],
-                'context': seg['context'],
-                'time_range': f"{seg['from_time']} → {seg['to_time']}"
-            }
-            
-            if seg['from_city']:
-                visited_cities.add(seg['from_city'])
-            if seg['to_city']:
-                visited_cities.add(seg['to_city'])
-            if seg['from_site']:
-                visited_sites.add(seg['from_site'])
-            if seg['to_site']:
-                visited_sites.add(seg['to_site'])
-                
-            if seg['is_dwell']:
-                total_dwell += seg['hours']
-            else:
-                total_transit += seg['hours']
-                # 尝试预估类似线路
-                if seg['from_city'] and seg['to_city']:
-                    est_hours, est_note, sample = self.estimate_segment_time(
-                        company_code, seg['from_city'], seg['to_city']
-                    )
-                    seg_info['estimate'] = {
-                        'hours': est_hours,
-                        'note': est_note,
-                        'sample_count': sample
-                    }
-                    
-            result['segments'].append(seg_info)
-            
-        # 汇总信息
-        result['summary']['total_transit_hours'] = round(total_transit, 1)
-        result['summary']['total_dwell_hours'] = round(total_dwell, 1)
-        result['summary']['cities_visited'] = list(visited_cities)
-        result['summary']['sites_visited'] = list(visited_sites)
-        
-        # 提取关键里程碑
-        milestones = []
-        for node in nodes:
-            if node['action_type'] in ['pickup', 'signed', 'arrived_pickup']:
-                milestones.append({
-                    'type': node['action_type'],
-                    'time': node['time_str'],
-                    'city': node['city'],
-                    'site': node['site_name'],
-                    'context': node['context']
-                })
-            elif node['node_type'] == 'transit_center' and node['action_type'] == 'arrive':
-                milestones.append({
-                    'type': 'arrive_transit',
-                    'time': node['time_str'],
-                    'city': node['city'],
-                    'site': node['site_name'],
-                    'context': node['context']
-                })
-        result['summary']['key_milestones'] = milestones
-        
-        # 预估剩余时间
-        if state != '3':  # 未签收
-            # 获取最后一个节点的城市
+        # ========== 即使节点不足，也从历史数据中查找预估 ==========
+        if len(nodes) >= 1:
             last_node = nodes[-1]
-            last_city = last_node['city']
+            current_city = last_node['city']
+            current_site = last_node['site_name']
+            current_action = last_node['action_type']
             
-            # 尝试从历史中预估到签收的时间
-            if last_city:
-                # 查询从该城市到签收的平均时间
-                sql = """
-                SELECT AVG((julianday(sign_time) - julianday(pickup_time)) * 24) as avg_hours, COUNT(*) as count
-                FROM delivery_history 
-                WHERE company_code = ? AND dest_city = ? AND sign_time IS NOT NULL AND pickup_time IS NOT NULL
+            estimates_found = False
+            
+            # 1. 查询从当前站点出发的下一站（不限公司）
+            if current_site:
+                sql_next = """
+                SELECT to_site, to_city, company_code, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+                FROM node_transit_history
+                WHERE from_site = ? AND to_site != ''
+                GROUP BY to_site, to_city, company_code
+                ORDER BY total_samples DESC, avg_hours
+                LIMIT 10
                 """
-                result2 = self.db_manager.execute_query(sql, (company_code, last_city))
-                if result2 and result2[0]['avg_hours'] and result2[0]['avg_hours'] > 0:
-                    avg = round(result2[0]['avg_hours'], 1)
+                results = self.db_manager.execute_query(sql_next, (current_site,))
+                
+                same_company_estimates = []
+                cross_company_estimates = []
+                
+                for row in results:
+                    if row['to_site'] and row['avg_hours']:
+                        confidence = row['total_samples'] or 1
+                        is_same_company = (row['company_code'] == company_code)
+                        est_type = '同公司' if is_same_company else '跨公司参考'
+                        
+                        estimate = {
+                            'type': 'next_station',
+                            'next_site': row['to_site'],
+                            'city': row['to_city'],
+                            'description': f"[{est_type}] 预计 {row['avg_hours']:.1f} 小时后到达 {row['to_site']}",
+                            'hours': round(row['avg_hours'], 1),
+                            'confidence': confidence,
+                            'confidence_level': '高' if confidence >= 5 else ('中' if confidence >= 2 else '低'),
+                            'company': row['company_code'],
+                            'is_same_company': is_same_company
+                        }
+                        
+                        if is_same_company:
+                            same_company_estimates.append(estimate)
+                        else:
+                            cross_company_estimates.append(estimate)
+                        
+                        estimates_found = True
+                
+                # 同公司优先，按置信度排序
+                same_company_estimates.sort(key=lambda x: x['confidence'], reverse=True)
+                cross_company_estimates.sort(key=lambda x: x['confidence'], reverse=True)
+                
+                result['estimations']['from_history'] = same_company_estimates[:5]
+                result['estimations']['cross_company_estimates'] = cross_company_estimates[:5]
+            
+            # 2. 如果没有找到任何站点数据，尝试只按城市查询（不限公司）
+            if not estimates_found and current_city:
+                sql_city = """
+                SELECT to_city, company_code, AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples
+                FROM node_transit_history
+                WHERE from_city = ? AND to_city != '' AND to_city != from_city
+                GROUP BY to_city, company_code
+                ORDER BY total_samples DESC, avg_hours
+                LIMIT 10
+                """
+                results = self.db_manager.execute_query(sql_city, (current_city,))
+                
+                same_company_estimates = []
+                cross_company_estimates = []
+                
+                for row in results:
+                    if row['to_city'] and row['avg_hours']:
+                        confidence = row['total_samples'] or 1
+                        is_same_company = (row['company_code'] == company_code)
+                        est_type = '同公司' if is_same_company else '跨公司参考'
+                        
+                        estimate = {
+                            'type': 'next_city',
+                            'next_city': row['to_city'],
+                            'description': f"[{est_type}] 从 {current_city} 到 {row['to_city']} 预计 {row['avg_hours']:.1f} 小时",
+                            'hours': round(row['avg_hours'], 1),
+                            'confidence': confidence,
+                            'confidence_level': '高' if confidence >= 5 else ('中' if confidence >= 2 else '低'),
+                            'company': row['company_code'],
+                            'is_same_company': is_same_company
+                        }
+                        
+                        if is_same_company:
+                            same_company_estimates.append(estimate)
+                        else:
+                            cross_company_estimates.append(estimate)
+                        
+                        estimates_found = True
+                
+                same_company_estimates.sort(key=lambda x: x['confidence'], reverse=True)
+                cross_company_estimates.sort(key=lambda x: x['confidence'], reverse=True)
+                
+                result['estimations']['from_history'] = same_company_estimates[:5]
+                result['estimations']['cross_company_estimates'] = cross_company_estimates[:5]
+            
+            # 3. 预估签收时间（不限公司）
+            if state != '3':  # 未签收
+                sql_sign = """
+                SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples, company_code
+                FROM node_transit_history
+                WHERE from_site = ? AND action_type = 'signed'
+                GROUP BY company_code
+                ORDER BY total_samples DESC
+                LIMIT 1
+                """
+                search_term = current_site if current_site else current_city
+                results = self.db_manager.execute_query(sql_sign, (search_term,))
+                
+                if not results and current_city:
+                    # 如果按站点没找到，尝试按城市
+                    sql_sign_city = """
+                    SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples, company_code
+                    FROM node_transit_history
+                    WHERE from_city = ? AND action_type = 'signed'
+                    GROUP BY company_code
+                    ORDER BY total_samples DESC
+                    LIMIT 1
+                    """
+                    results = self.db_manager.execute_query(sql_sign_city, (current_city,))
+                
+                if results and results[0]['avg_hours']:
+                    avg_hours = results[0]['avg_hours']
+                    total_samples = results[0]['total_samples'] or 1
+                    est_company = results[0].get('company_code', '')
+                    is_same = (est_company == company_code)
+                    est_type = '同公司' if is_same else '跨公司参考'
+                    
                     result['estimations']['final_estimate'] = {
-                        'hours': avg,
-                        'note': f"基于{result2[0]['count']}次该城市签收记录，预计{avg}小时后签收"
+                        'hours': round(avg_hours, 1),
+                        'note': f"[{est_type}] 基于{total_samples}次历史数据，预计{avg_hours:.1f}小时后签收",
+                        'confidence': total_samples,
+                        'confidence_level': '高' if total_samples >= 5 else ('中' if total_samples >= 2 else '低'),
+                        'is_same_company': is_same,
+                        'company': est_company
                     }
+                
+                # 如果还是没有，尝试从 delivery_history 表查询
+                if not result['estimations']['final_estimate'] and current_city:
+                    sql_delivery = """
+                    SELECT AVG((julianday(sign_time) - julianday(pickup_time)) * 24) as avg_hours, 
+                        COUNT(*) as count, company_code
+                    FROM delivery_history 
+                    WHERE dest_city = ? AND sign_time IS NOT NULL AND pickup_time IS NOT NULL
+                    GROUP BY company_code
+                    ORDER BY count DESC
+                    LIMIT 1
+                    """
+                    results = self.db_manager.execute_query(sql_delivery, (current_city,))
+                    if results and results[0]['avg_hours'] and results[0]['avg_hours'] > 0:
+                        avg_hours = round(results[0]['avg_hours'], 1)
+                        count = results[0]['count']
+                        est_company = results[0].get('company_code', '')
+                        is_same = (est_company == company_code)
+                        est_type = '同公司' if is_same else '跨公司参考'
+                        
+                        result['estimations']['final_estimate'] = {
+                            'hours': avg_hours,
+                            'note': f"[{est_type}] 基于{count}次该城市签收记录，预计{avg_hours}小时后签收",
+                            'confidence': count,
+                            'confidence_level': '高' if count >= 5 else ('中' if count >= 2 else '低'),
+                            'is_same_company': is_same,
+                            'company': est_company
+                        }
+        
+        # ========== 如果节点足够，计算已发生的段 ==========
+        if len(nodes) >= 2:
+            segments = self.calculate_node_transit_times(nodes)
+            
+            visited_cities = set()
+            visited_sites = set()
+            total_transit = 0
+            total_dwell = 0
+            
+            # 分析每个段
+            for seg in segments:
+                seg_info = {
+                    'from_city': seg['from_city'] or '未知',
+                    'to_city': seg['to_city'] or '未知',
+                    'from_site': seg['from_site'] or '未知',
+                    'to_site': seg['to_site'] or '未知',
+                    'hours': seg['hours'],
+                    'is_dwell': seg['is_dwell'],
+                    'context': seg['context'],
+                    'time_range': f"{seg['from_time']} → {seg['to_time']}"
+                }
+                
+                if seg['from_city']:
+                    visited_cities.add(seg['from_city'])
+                if seg['to_city']:
+                    visited_cities.add(seg['to_city'])
+                if seg['from_site']:
+                    visited_sites.add(seg['from_site'])
+                if seg['to_site']:
+                    visited_sites.add(seg['to_site'])
+                    
+                if seg['is_dwell']:
+                    total_dwell += seg['hours']
+                else:
+                    total_transit += seg['hours']
+                    # 尝试预估类似线路
+                    if seg['from_city'] and seg['to_city']:
+                        est_hours, est_note, sample = self.estimate_segment_time(
+                            company_code, seg['from_city'], seg['to_city']
+                        )
+                        seg_info['estimate'] = {
+                            'hours': est_hours,
+                            'note': est_note,
+                            'sample_count': sample
+                        }
+                        
+                result['segments'].append(seg_info)
+                
+            # 汇总信息
+            result['summary']['total_transit_hours'] = round(total_transit, 1)
+            result['summary']['total_dwell_hours'] = round(total_dwell, 1)
+            result['summary']['cities_visited'] = list(visited_cities)
+            result['summary']['sites_visited'] = list(visited_sites)
+            
+            # 提取关键里程碑
+            milestones = []
+            for node in nodes:
+                if node['action_type'] in ['pickup', 'signed', 'arrived_pickup']:
+                    milestones.append({
+                        'type': node['action_type'],
+                        'time': node['time_str'],
+                        'city': node['city'],
+                        'site': node['site_name'],
+                        'context': node['context']
+                    })
+                elif node['node_type'] == 'transit_center' and node['action_type'] == 'arrive':
+                    milestones.append({
+                        'type': 'arrive_transit',
+                        'time': node['time_str'],
+                        'city': node['city'],
+                        'site': node['site_name'],
+                        'context': node['context']
+                    })
+            result['summary']['key_milestones'] = milestones
+        else:
+            # 节点不足，但仍有基本信息
+            if len(nodes) == 1:
+                node = nodes[0]
+                if node['city']:
+                    result['summary']['cities_visited'] = [node['city']]
+                if node['site_name']:
+                    result['summary']['sites_visited'] = [node['site_name']]
+                
+                # 记录揽收里程碑
+                if node['action_type'] == 'pickup':
+                    result['summary']['key_milestones'].append({
+                        'type': 'pickup',
+                        'time': node['time_str'],
+                        'city': node['city'],
+                        'site': node['site_name'],
+                        'context': node['context']
+                    })
         
         return result
-    
+
+
+
     def get_timeline_html(self, express_data: Dict) -> str:
         """
         生成物流时间轴HTML（用于显示）
@@ -1839,19 +2521,19 @@ class LogisticsNodeAnalyzer:
             return analysis['error']
             
         text = f"""
-╔══════════════════════════════════════════════════════════════╗
-║                     物流节点时间分析报告（增强版）
-╠══════════════════════════════════════════════════════════════╣
-║ 快递单号: {analysis['tracking_number']}
-║ 快递公司: {analysis['company_code']}
-║ 物流状态: {'✅ 已签收' if analysis['is_signed'] else '🚚 运输中'}
-╠══════════════════════════════════════════════════════════════╣
-║ 统计摘要:
-║   • 物流节点数: {analysis['total_nodes']}
-║   • 途经站点数: {len(analysis['summary']['sites_visited'])}
-║   • 累计运输时间: {analysis['summary']['total_transit_hours']:.1f} 小时
-║   • 累计停留时间: {analysis['summary']['total_dwell_hours']:.1f} 小时
-"""
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                     物流节点时间分析报告（增强版）
+    ╠══════════════════════════════════════════════════════════════╣
+    ║ 快递单号: {analysis['tracking_number']}
+    ║ 快递公司: {analysis['company_code']}
+    ║ 物流状态: {'✅ 已签收' if analysis['is_signed'] else '🚚 运输中'}
+    ╠══════════════════════════════════════════════════════════════╣
+    ║ 统计摘要:
+    ║   • 物流节点数: {analysis['total_nodes']}
+    ║   • 途经站点数: {len(analysis['summary']['sites_visited'])}
+    ║   • 累计运输时间: {analysis['summary']['total_transit_hours']:.1f} 小时
+    ║   • 累计停留时间: {analysis['summary']['total_dwell_hours']:.1f} 小时
+    """
 
         # 添加快递员/揽收员信息
         if analysis['courier_info'] and analysis['courier_info'].get('name'):
@@ -1864,22 +2546,77 @@ class LogisticsNodeAnalyzer:
         text += "║ 站点时间轴:\n"
         
         # 添加站点时间轴
-        for site in analysis['site_timeline']:
-            marker = "📍" if site.get('is_current') else "  "
-            text += f"║ {marker} {site['site']}\n"
-            text += f"║     到达: {site['arrive_time']}\n"
-            if site['depart_time']:
-                text += f"║     离开: {site['depart_time']}\n"
-            text += f"║     停留: {site['duration_hours']:.1f} 小时\n"
-            text += "║     ─────────────────────────────────\n"
+        if analysis['site_timeline']:
+            for site in analysis['site_timeline']:
+                marker = "📍" if site.get('is_current') else "  "
+                text += f"║ {marker} {site['site']}\n"
+                text += f"║     到达: {site['arrive_time']}\n"
+                if site['depart_time']:
+                    text += f"║     离开: {site['depart_time']}\n"
+                text += f"║     停留: {site['duration_hours']:.1f} 小时\n"
+                text += "║     ─────────────────────────────────\n"
+        else:
+            # 如果有当前站点信息，显示当前站点
+            if analysis['total_nodes'] >= 1:
+                text += f"║   📍 当前位置: {analysis['summary'].get('sites_visited', ['未知'])[0] if analysis['summary'].get('sites_visited') else '未知'}\n"
+                text += "║     ─────────────────────────────────\n"
+            else:
+                text += "║   （暂无站点时间轴数据）\n"
+                text += "║     ─────────────────────────────────\n"
+        
+        # 添加同公司历史数据预估
+        if analysis['estimations']['from_history']:
+            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            text += "║ 📊 同公司历史数据预估:\n"
+            for est in analysis['estimations']['from_history']:
+                text += f"║   • {est['description']}"
+                if 'confidence' in est:
+                    confidence = est['confidence']
+                    confidence_icon = "🟢" if confidence >= 5 else ("🟡" if confidence >= 2 else "🔴")
+                    text += f" {confidence_icon}(样本: {confidence})"
+                text += "\n"
+        
+        # 添加跨公司参考数据
+        if analysis['estimations'].get('cross_company_estimates'):
+            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            text += "║ 🔄 跨公司参考数据 (仅供参考):\n"
+            for est in analysis['estimations']['cross_company_estimates']:
+                text += f"║   • {est['description']}"
+                if 'confidence' in est:
+                    confidence = est['confidence']
+                    confidence_icon = "🟢" if confidence >= 5 else ("🟡" if confidence >= 2 else "🔴")
+                    text += f" {confidence_icon}(样本: {confidence})"
+                if 'company' in est:
+                    text += f" [{est['company']}]"
+                text += "\n"
+        
+        # 添加最终预估
+        if analysis['estimations']['final_estimate']:
+            est = analysis['estimations']['final_estimate']
+            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            if est.get('is_same_company'):
+                text += f"║ 🎯 最终预估: {est['note']}\n"
+            else:
+                text += f"║ 🎯 最终预估 (跨公司参考): {est['note']}\n"
         
         # 添加后续站点预估
         if analysis['estimations']['next_stations']:
-            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
-            text += "║ 🎯 后续站点到达预估 (基于历史数据):\n"
+            if not analysis['estimations']['from_history'] and not analysis['estimations'].get('cross_company_estimates'):
+                text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            text += "║ 🎯 后续站点到达预估:\n"
             for est in analysis['estimations']['next_stations']:
                 text += f"║   • {est['description']} (置信度: {est['confidence_level']})\n"
-            
+        
+        # 如果没有任何预估数据
+        if (not analysis['estimations']['from_history'] and 
+            not analysis['estimations'].get('cross_company_estimates') and
+            not analysis['estimations']['next_stations'] and
+            not analysis['estimations']['final_estimate']):
+            text += "\n╠══════════════════════════════════════════════════════════════╣\n"
+            text += "║ ℹ️ 暂无足够的历史数据用于预估\n"
+            text += "║    建议：等待更多快递数据积累，或使用「数据库管理」中的\n"
+            text += "║          「重建节点运输历史数据」功能来更新预估数据。\n"
+        
         text += "╚══════════════════════════════════════════════════════════════╝"
         
         return text
@@ -1915,19 +2652,31 @@ class DeliveryTimeEstimator:
         """
         self.db_manager.execute_update(sql)
         
-        # 添加新字段（如果表已存在）
-        try:
-            self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_time TEXT")
-        except:
-            pass
-        try:
-            self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_days INTEGER")
-        except:
-            pass
-        try:
-            self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN delivery_type TEXT")
-        except:
-            pass
+        # 检查字段是否存在再添加
+        def column_exists(table_name, column_name):
+            result = self.db_manager.execute_query(f"PRAGMA table_info({table_name})")
+            for col in result:
+                if col['name'] == column_name:
+                    return True
+            return False
+        
+        if not column_exists('delivery_history', 'arrival_time'):
+            try:
+                self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_time TEXT")
+            except:
+                pass
+        
+        if not column_exists('delivery_history', 'arrival_days'):
+            try:
+                self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_days INTEGER")
+            except:
+                pass
+        
+        if not column_exists('delivery_history', 'delivery_type'):
+            try:
+                self.db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN delivery_type TEXT")
+            except:
+                pass
         
         # 创建索引
         index_sqls = [
@@ -1991,7 +2740,9 @@ class DeliveryTimeEstimator:
             return
             
         track_list = express_data.get('data', [])
-        if len(track_list) < 2:
+        if len(track_list) < 1:
+            if DEBUG_MODE:
+                print(f"  [记录时效] 跳过 {tracking_num}: 无物流轨迹")
             return
             
         # 找揽收时间
@@ -2008,7 +2759,7 @@ class DeliveryTimeEstimator:
             context = track.get('context', '')
             time_str = track.get('time', '')
             
-            # 找揽收
+            # 找揽收 - 优先找明确的揽收记录
             if not pickup_time and ('揽收' in context or '已揽件' in context or '收件' in context or '取件' in context):
                 pickup_time = time_str
                 origin_city = self.extract_city(context)
@@ -2024,13 +2775,27 @@ class DeliveryTimeEstimator:
                 arrival_time = time_str
                 dest_city = self.extract_city(context)
                 delivery_type = 'arrived'
-                
+        
+        # 如果没找到明确的揽收时间，但有物流轨迹
+        if not pickup_time and track_list:
+            # 使用第一条轨迹的时间作为揽收时间
+            first_track = track_list[0]
+            pickup_time = first_track.get('time', '')
+            origin_city = self.extract_city(first_track.get('context', ''))
+            
+            if DEBUG_MODE:
+                print(f"  [记录时效] {tracking_num}: 未找到明确揽收记录，使用第一条轨迹时间 {pickup_time}")
+        
         if not pickup_time:
+            if DEBUG_MODE:
+                print(f"  [记录时效] 跳过 {tracking_num}: 无法确定揽收时间")
             return
             
         # 确定终点时间
         end_time = sign_time if sign_time else arrival_time
         if not end_time:
+            if DEBUG_MODE:
+                print(f"  [记录时效] 跳过 {tracking_num}: 无法确定终点时间（未签收且未到驿站）")
             return
             
         # 计算天数差
@@ -2040,7 +2805,9 @@ class DeliveryTimeEstimator:
             delivery_days = (end_dt - pickup_dt).days
             if delivery_days < 0:
                 delivery_days = 0
-        except:
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"  [记录时效] 跳过 {tracking_num}: 时间解析失败 {e}")
             return
             
         # 生成线路key
@@ -2057,13 +2824,16 @@ class DeliveryTimeEstimator:
         sql = """
         INSERT INTO delivery_history 
         (tracking_number, company_code, company_name, origin_city, dest_city, 
-         pickup_time, sign_time, arrival_time, delivery_days, arrival_days, route_key, delivery_type)
+        pickup_time, sign_time, arrival_time, delivery_days, arrival_days, route_key, delivery_type)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.db_manager.execute_update(sql, (
             tracking_num, company_code, company_name, origin_city, dest_city,
             pickup_time, sign_time, arrival_time, delivery_days, delivery_days, route_key, delivery_type
         ))
+        
+        if DEBUG_MODE:
+            print(f"  [记录时效] 成功记录 {tracking_num}: {origin_city}->{dest_city}, {delivery_days}天")
         
     def estimate_delivery_days(self, company_code: str, context: str = "", delivery_type: str = None) -> Tuple[Optional[int], str]:
         """
@@ -2164,8 +2934,15 @@ class ApiAccountManager:
         self.db_manager = db_manager
         self.current_account = None
         self.accounts = []
+        self.fixed_order = False  # 是否固定排序
         self.load_accounts()
         self.check_and_reset_daily_usage()  # 初始化时检查是否需要重置
+        
+    def load_fixed_order_setting(self) -> bool:
+        """加载固定排序设置"""
+        sql = "SELECT value FROM user_settings WHERE key = 'fixed_account_order'"
+        result = self.db_manager.execute_query(sql)
+        return (result and result[0]['value'] == '1')
         
     def check_and_reset_daily_usage(self):
         """检查并重置每日使用次数（不重置 current_account）"""
@@ -2230,7 +3007,10 @@ class ApiAccountManager:
                 self.current_account = self.accounts[0]
 
     def load_accounts(self):
-        """加载所有账号（会重置 current_account 为第一个）"""
+        """加载所有账号"""
+        # 刷新固定排序设置
+        self.fixed_order = self.load_fixed_order_setting()
+        
         query = """
         SELECT * FROM api_accounts 
         WHERE is_active = 1 
@@ -2274,7 +3054,6 @@ class ApiAccountManager:
         self.check_and_reset_daily_usage()
         return self.current_account
         
-
     def switch_to_next_account(self, force_switch: bool = True) -> bool:
         """切换到下一个可用账号
         
@@ -2286,6 +3065,9 @@ class ApiAccountManager:
                 print("[账号切换] 没有账号列表")
             return False
             
+        # 刷新固定排序设置
+        self.fixed_order = self.load_fixed_order_setting()
+        
         # 先检查是否需要重置
         self.check_and_reset_daily_usage()
         
@@ -2312,7 +3094,7 @@ class ApiAccountManager:
             return False
         
         if DEBUG_MODE:
-            print(f"[账号切换] 当前账号: {current_name}, 总数: {total}, 强制切换: {force_switch}")
+            print(f"[账号切换] 当前账号: {current_name}, 总数: {total}, 强制切换: {force_switch}, 固定排序: {self.fixed_order}")
         
         # 记录已经尝试过的账号，避免无限循环
         tried_indices = set()
@@ -2329,8 +3111,17 @@ class ApiAccountManager:
             # 强制切换：只要不是当前账号就切换
             if force_switch:
                 if account['id'] != current_id:
+                    old_account = self.current_account
                     self.current_account = account
                     self._refresh_single_account(account['id'])
+                    
+                    # ========== 关键修改：如果未启用固定排序，将新账号移到第一位 ==========
+                    if not self.fixed_order:
+                        self._move_account_to_first(account['id'])
+                        # 重新加载账号列表以更新排序
+                        self.load_accounts()
+                    # ============================================================
+                    
                     if DEBUG_MODE:
                         print(f"[账号切换] 强制切换到账号: {account_name}")
                     return True
@@ -2340,8 +3131,17 @@ class ApiAccountManager:
                 daily_limit = account.get('daily_limit', 100)
                 
                 if used_today < daily_limit:
+                    old_account = self.current_account
                     self.current_account = account
                     self._refresh_single_account(account['id'])
+                    
+                    # ========== 关键修改：如果未启用固定排序，将新账号移到第一位 ==========
+                    if not self.fixed_order:
+                        self._move_account_to_first(account['id'])
+                        # 重新加载账号列表以更新排序
+                        self.load_accounts()
+                    # ============================================================
+                    
                     if DEBUG_MODE:
                         print(f"[账号切换] 正常切换到账号: {account_name} ({used_today}/{daily_limit})")
                     return True
@@ -2352,6 +3152,23 @@ class ApiAccountManager:
         if DEBUG_MODE:
             print("[账号切换] 没有可切换的账号")
         return False
+
+    def _move_account_to_first(self, account_id: int):
+        """将指定账号移到排序的第一位"""
+        try:
+            # 先将所有账号的 sort_order 加 1
+            sql1 = "UPDATE api_accounts SET sort_order = sort_order + 1"
+            self.db_manager.execute_update(sql1)
+            
+            # 将目标账号的 sort_order 设为 0
+            sql2 = "UPDATE api_accounts SET sort_order = 0 WHERE id = ?"
+            self.db_manager.execute_update(sql2, (account_id,))
+            
+            if DEBUG_MODE:
+                print(f"[排序调整] 已将账号 ID={account_id} 移到第一位")
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[排序调整失败] {e}")
 
     def _refresh_single_account(self, account_id: int):
         """刷新单个账号的最新数据"""
@@ -2468,7 +3285,7 @@ class ApiAccountManager:
         return {'used': 0, 'limit': 100, 'remaining': 100}
 
 
-class ApiAccountDialog(QDialog):
+class ApiAccountDialog(DialogWithStatusBar):
     """API账号管理对话框"""
     
     def __init__(self, db_manager: DatabaseManagerPro, parent=None):
@@ -2481,7 +3298,7 @@ class ApiAccountDialog(QDialog):
         
     def init_ui(self):
         self.setWindowTitle("API账号管理")
-        self.setMinimumSize(950, 600)
+        self.setMinimumSize(950, 650)
         self.setModal(True)
         
         layout = QVBoxLayout()
@@ -2548,16 +3365,29 @@ class ApiAccountDialog(QDialog):
         
         layout.addLayout(btn_layout)
         
+        # ========== 修改后的自动切换设置区域 ==========
         switch_group = QGroupBox("自动切换设置")
-        switch_layout = QHBoxLayout()
+        switch_layout = QVBoxLayout()
         
+        # 第一行：自动切换复选框
+        switch_row1 = QHBoxLayout()
         self.auto_switch_check = QCheckBox("启用额度用完自动切换账号")
         self.auto_switch_check.setToolTip("当当前账号今日额度用完时，自动切换到下一个可用账号")
-        switch_layout.addWidget(self.auto_switch_check)
+        switch_row1.addWidget(self.auto_switch_check)
+        switch_row1.addStretch()
+        switch_layout.addLayout(switch_row1)
         
-        switch_layout.addStretch()
+        # 第二行：固定排序复选框
+        switch_row2 = QHBoxLayout()
+        self.fixed_order_check = QCheckBox("固定排序（切换账号时不自动调整顺序）")
+        self.fixed_order_check.setToolTip("启用后，切换账号或设为当前使用时不会自动调整账号排序，保持手动设置的顺序")
+        switch_row2.addWidget(self.fixed_order_check)
+        switch_row2.addStretch()
+        switch_layout.addLayout(switch_row2)
+        
         switch_group.setLayout(switch_layout)
         layout.addWidget(switch_group)
+        # ========== 修改结束 ==========
         
         bottom_layout = QHBoxLayout()
         
@@ -2573,8 +3403,9 @@ class ApiAccountDialog(QDialog):
         
         layout.addLayout(bottom_layout)
         
+        self.setup_status_bar(layout)
+
         self.setLayout(layout)
-        
         self.load_auto_switch_setting()
         
     def load_accounts(self):
@@ -2653,18 +3484,19 @@ class ApiAccountDialog(QDialog):
     def edit_account(self):
         row = self.account_table.currentRow()
         if row < 0 or row >= len(self.accounts):
-            QMessageBox.warning(self, "提示", "请先选择要编辑的账号")
+            self.show_status("⚠️ 请先选择要编辑的账号", 3000)
             return
             
         account = self.accounts[row]
         dialog = ApiAccountEditDialog(self.db_manager, account, self)
         if dialog.exec() == QDialog.Accepted:
             self.load_accounts()
+            self.show_status("✅ 账号已更新", 2000)
             
     def delete_account(self):
         row = self.account_table.currentRow()
         if row < 0 or row >= len(self.accounts):
-            QMessageBox.warning(self, "提示", "请先选择要删除的账号")
+            self.show_status("⚠️ 请先选择要删除的账号", 3000)
             return
             
         account = self.accounts[row]
@@ -2678,6 +3510,7 @@ class ApiAccountDialog(QDialog):
             sql = "UPDATE api_accounts SET is_active = 0 WHERE id = ?"
             self.db_manager.execute_update(sql, (account['id'],))
             self.load_accounts()
+            self.show_status("✅ 账号已删除", 2000)
             
     def move_up(self):
         row = self.account_table.currentRow()
@@ -2715,23 +3548,27 @@ class ApiAccountDialog(QDialog):
             self.db_manager.execute_update(sql2, (order1, id2))
             
     def set_as_current(self):
+        """设为当前使用账号"""
         row = self.account_table.currentRow()
         if row < 0 or row >= len(self.accounts):
-            QMessageBox.warning(self, "提示", "请先选择要设为当前的账号")
+            self.show_status("⚠️ 请先选择要设为当前的账号", 3000)
             return
             
         account = self.accounts[row]
         
-        # 先将所有账号的 sort_order 重置
-        sql1 = "UPDATE api_accounts SET sort_order = sort_order + 1"
-        self.db_manager.execute_update(sql1)
+        sql = "SELECT value FROM user_settings WHERE key = 'fixed_account_order'"
+        result = self.db_manager.execute_query(sql)
+        fixed_order = (result and result[0]['value'] == '1')
         
-        sql2 = "UPDATE api_accounts SET sort_order = 0 WHERE id = ?"
-        self.db_manager.execute_update(sql2, (account['id'],))
+        if not fixed_order:
+            sql1 = "UPDATE api_accounts SET sort_order = sort_order + 1"
+            self.db_manager.execute_update(sql1)
+            
+            sql2 = "UPDATE api_accounts SET sort_order = 0 WHERE id = ?"
+            self.db_manager.execute_update(sql2, (account['id'],))
         
         self.load_accounts()
         
-        # 通过 QApplication 查找主窗口
         from PySide6.QtWidgets import QApplication
         
         main_window = None
@@ -2741,14 +3578,11 @@ class ApiAccountDialog(QDialog):
                 break
         
         if main_window and hasattr(main_window, 'api_account_manager'):
-            # 强制刷新账号管理器的数据
             main_window.api_account_manager.load_accounts()
-            # 重新加载当前账号到主窗口
             main_window.load_current_api_account()
-            # 更新显示
             main_window.update_api_account_display()
         
-        QMessageBox.information(self, "成功", f"已将 '{account['account_name']}' 设为当前使用账号，界面已更新")
+        self.show_status(f"✅ 已将 '{account['account_name']}' 设为当前使用账号", 3000)
         
     def reset_usage(self, row: int):
         if row < 0 or row >= len(self.accounts):
@@ -2758,26 +3592,39 @@ class ApiAccountDialog(QDialog):
         sql = "UPDATE api_accounts SET used_today = 0, last_used = NULL, last_used_date = NULL WHERE id = ?"
         self.db_manager.execute_update(sql, (account['id'],))
         self.load_accounts()
+        self.show_status(f"✅ 账号 '{account['account_name']}' 额度已重置", 2000)
         
     def load_auto_switch_setting(self):
+        """加载自动切换设置"""
         sql = "SELECT value FROM user_settings WHERE key = 'auto_switch_account'"
         result = self.db_manager.execute_query(sql)
         if result:
             self.auto_switch_check.setChecked(result[0]['value'] == '1')
+        
+        # 加载固定排序设置
+        sql2 = "SELECT value FROM user_settings WHERE key = 'fixed_account_order'"
+        result2 = self.db_manager.execute_query(sql2)
+        if result2:
+            self.fixed_order_check.setChecked(result2[0]['value'] == '1')
             
     def save_settings(self):
+        """保存设置"""
         auto_switch = '1' if self.auto_switch_check.isChecked() else '0'
-        sql = "INSERT OR REPLACE INTO user_settings (key, value) VALUES ('auto_switch_account', ?)"
-        self.db_manager.execute_update(sql, (auto_switch,))
-        QMessageBox.information(self, "成功", "设置已保存")
+        sql1 = "INSERT OR REPLACE INTO user_settings (key, value) VALUES ('auto_switch_account', ?)"
+        self.db_manager.execute_update(sql1, (auto_switch,))
+        
+        fixed_order = '1' if self.fixed_order_check.isChecked() else '0'
+        sql2 = "INSERT OR REPLACE INTO user_settings (key, value) VALUES ('fixed_account_order', ?)"
+        self.db_manager.execute_update(sql2, (fixed_order,))
+        
+        self.show_status("✅ 设置已保存", 2000)
 
     def export_accounts(self):
         """导出所有账号到JSON文件"""
         if not self.accounts:
-            QMessageBox.information(self, "提示", "没有可导出的账号")
+            self.show_status("ℹ️ 没有可导出的账号", 3000)
             return
         
-        # 选择保存路径
         file_path, _ = QFileDialog.getSaveFileName(
             self, "导出API账号", 
             f"api_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
@@ -2788,7 +3635,6 @@ class ApiAccountDialog(QDialog):
             return
         
         try:
-            # 准备导出数据（隐藏敏感信息的选项）
             reply = QMessageBox.question(
                 self, "导出选项",
                 "是否导出完整的密钥信息？\n\n"
@@ -2818,13 +3664,11 @@ class ApiAccountDialog(QDialog):
                 }
                 
                 if include_secrets:
-                    # 完整导出
                     export_account['customer'] = account.get('customer', '')
                     export_account['auth_key'] = account.get('auth_key', '')
                     export_account['secret'] = account.get('secret', '')
                     export_account['userid'] = account.get('userid', '')
                 else:
-                    # 部分隐藏
                     customer = account.get('customer', '')
                     auth_key = account.get('auth_key', '')
                     if customer:
@@ -2840,17 +3684,13 @@ class ApiAccountDialog(QDialog):
                 
                 export_data['accounts'].append(export_account)
             
-            # 写入文件
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
             
-            QMessageBox.information(self, "导出成功", 
-                f"已成功导出 {len(self.accounts)} 个账号到：\n{file_path}\n\n"
-                f"{'包含完整密钥信息' if include_secrets else '密钥信息已部分隐藏'}")
+            self.show_status(f"✅ 已导出 {len(self.accounts)} 个账号", 3000)
                 
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出账号时发生错误：\n{str(e)}")
-
 
     def import_accounts(self):
         """从JSON文件导入账号"""
@@ -2866,19 +3706,17 @@ class ApiAccountDialog(QDialog):
             with open(file_path, 'r', encoding='utf-8') as f:
                 import_data = json.load(f)
             
-            # 验证文件格式
             if 'accounts' not in import_data:
-                QMessageBox.critical(self, "导入失败", "无效的账号文件格式")
+                self.parent_gui.status_bar.showMessage("❌ 无效的账号文件格式", 5000)
                 return
             
             accounts_to_import = import_data['accounts']
             include_secrets = import_data.get('include_secrets', False)
             
             if not accounts_to_import:
-                QMessageBox.information(self, "提示", "文件中没有账号数据")
+                self.parent_gui.status_bar.showMessage("✅ 文件中没有账号数据", 3000)
                 return
             
-            # 检查是否有完整密钥
             has_secrets = any('customer' in acc and 'auth_key' in acc and 
                             '****' not in str(acc.get('customer', '')) and 
                             '****' not in str(acc.get('auth_key', '')) 
@@ -2890,7 +3728,6 @@ class ApiAccountDialog(QDialog):
                     "请使用包含完整密钥的备份文件。")
                 return
             
-            # 选择导入模式
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("导入选项")
             msg_box.setText(f"发现 {len(accounts_to_import)} 个账号，请选择导入方式：")
@@ -2908,7 +3745,6 @@ class ApiAccountDialog(QDialog):
             
             replace_existing = (clicked_btn == replace_btn)
             
-            # 获取现有账号名称列表（用于去重检查）
             existing_names = set()
             if not replace_existing:
                 query = "SELECT account_name FROM api_accounts WHERE is_active = 1"
@@ -2919,11 +3755,9 @@ class ApiAccountDialog(QDialog):
             skip_count = 0
             
             if replace_existing:
-                # 先软删除所有现有账号
                 sql = "UPDATE api_accounts SET is_active = 0"
                 self.db_manager.execute_update(sql)
                 
-                # 重置排序
                 sort_order = 0
                 for account in accounts_to_import:
                     account_name = account.get('account_name', '').strip()
@@ -2931,7 +3765,6 @@ class ApiAccountDialog(QDialog):
                         skip_count += 1
                         continue
                     
-                    # 插入账号
                     sql = """
                     INSERT INTO api_accounts 
                     (account_name, customer, auth_key, secret, userid, smart_judge, daily_limit, sort_order, is_active)
@@ -2950,7 +3783,6 @@ class ApiAccountDialog(QDialog):
                     sort_order += 1
                     import_count += 1
             else:
-                # 合并模式：只添加不存在的账号
                 query = "SELECT MAX(sort_order) as max_order FROM api_accounts WHERE is_active = 1"
                 result = self.db_manager.execute_query(query)
                 max_order = result[0]['max_order'] if result and result[0]['max_order'] is not None else 0
@@ -2962,16 +3794,13 @@ class ApiAccountDialog(QDialog):
                         skip_count += 1
                         continue
                     
-                    # 检查是否已存在
                     if account_name in existing_names:
-                        # 询问是否覆盖
                         reply = QMessageBox.question(self, "账号已存在", 
                             f"账号 '{account_name}' 已存在，是否覆盖？\n"
                             "点击「是」覆盖现有账号，点击「否」跳过该账号。",
                             QMessageBox.Yes | QMessageBox.No)
                         
                         if reply == QMessageBox.Yes:
-                            # 更新现有账号
                             sql = """
                             UPDATE api_accounts 
                             SET customer = ?, auth_key = ?, secret = ?, userid = ?, 
@@ -2991,7 +3820,6 @@ class ApiAccountDialog(QDialog):
                         else:
                             skip_count += 1
                     else:
-                        # 插入新账号
                         sql = """
                         INSERT INTO api_accounts 
                         (account_name, customer, auth_key, secret, userid, smart_judge, daily_limit, sort_order, is_active)
@@ -3010,18 +3838,12 @@ class ApiAccountDialog(QDialog):
                         sort_order += 1
                         import_count += 1
             
-            # 重新加载账号列表
             self.load_accounts()
             
-            # 显示导入结果
-            result_msg = f"导入完成！\n成功导入：{import_count} 个账号"
-            if skip_count > 0:
-                result_msg += f"\n跳过：{skip_count} 个账号"
-            
-            QMessageBox.information(self, "导入完成", result_msg)
+            self.show_status(f"✅ 导入完成：成功 {import_count} 个，跳过 {skip_count} 个", 5000)
             
         except json.JSONDecodeError:
-            QMessageBox.critical(self, "导入失败", "无效的JSON文件格式")
+            self.show_status("❌ 无效的JSON文件格式", 5000)
         except Exception as e:
             QMessageBox.critical(self, "导入失败", f"导入账号时发生错误：\n{str(e)}")
 
@@ -3044,7 +3866,7 @@ class ApiAccountDialog(QDialog):
         event.accept()
 
 
-class ApiAccountEditDialog(QDialog):
+class ApiAccountEditDialog(DialogWithStatusBar): 
     """API账号编辑对话框"""
     
     def __init__(self, db_manager: DatabaseManagerPro, account: Dict = None, parent=None):
@@ -3061,7 +3883,7 @@ class ApiAccountEditDialog(QDialog):
     def init_ui(self):
         title = "编辑账号" if self.account else "添加账号"
         self.setWindowTitle(title)
-        self.setMinimumSize(500, 420)
+        self.setMinimumSize(500, 450)
         
         layout = QVBoxLayout()
         layout.setSpacing(15)
@@ -3119,6 +3941,9 @@ class ApiAccountEditDialog(QDialog):
         
         layout.addLayout(btn_layout)
         
+        # 添加状态栏
+        self.setup_status_bar(layout)
+
         self.setLayout(layout)
         
     def load_account_data(self):
@@ -3137,15 +3962,15 @@ class ApiAccountEditDialog(QDialog):
         auth_key = self.auth_key_edit.text().strip()
         
         if not account_name:
-            QMessageBox.warning(self, "提示", "请输入账号名称")
+            self.show_status("⚠️ 请输入账号名称", 3000)
             return
             
         if not customer:
-            QMessageBox.warning(self, "提示", "请输入Customer ID")
+            self.show_status("⚠️ 请输入Customer ID", 3000)
             return
             
         if not auth_key:
-            QMessageBox.warning(self, "提示", "请输入Auth Key")
+            self.show_status("⚠️ 请输入Auth Key", 3000)
             return
             
         secret = self.secret_edit.text().strip()
@@ -3180,7 +4005,8 @@ class ApiAccountEditDialog(QDialog):
                 smart_judge, daily_limit, sort_order
             ))
             
-        self.accept()
+        self.show_status("✅ 账号已保存", 2000)
+        QTimer.singleShot(500, self.accept)  # 延迟关闭，让用户看到提示
 
 
 class UserManagerPro:
@@ -4248,10 +5074,12 @@ class ExpressItemWidget(QWidget):
         """复制文本到剪贴板"""
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
-        if item_name:
-            QMessageBox.information(self, "复制成功", f"{item_name}已复制到剪贴板")
-        else:
-            QMessageBox.information(self, "复制成功", "已复制到剪贴板")
+        # 改为状态栏提示，不再弹窗
+        if hasattr(self, 'parent_gui') and self.parent_gui:
+            if item_name:
+                self.parent_gui.status_bar.showMessage(f"✅ {item_name}已复制到剪贴板", 2000)
+            else:
+                self.parent_gui.status_bar.showMessage("✅ 已复制到剪贴板", 2000)
 
     def copy_full_info(self):
         """复制完整信息"""
@@ -4271,7 +5099,8 @@ class ExpressItemWidget(QWidget):
         
         clipboard = QApplication.clipboard()
         clipboard.setText(full_info)
-        QMessageBox.information(self, "复制成功", "完整快递信息已复制到剪贴板")
+        if hasattr(self, 'parent_gui') and self.parent_gui:
+            self.parent_gui.status_bar.showMessage("✅ 完整快递信息已复制到剪贴板", 2000)
 
     def add_quick_remark_direct(self, text: str):
         """直接添加快捷备注"""
@@ -4284,7 +5113,8 @@ class ExpressItemWidget(QWidget):
         self.remark_changed.emit(self.express_id, new_remark)
         self.express_data['remark'] = new_remark
         self.update_display()
-        QMessageBox.information(self, "成功", f"已添加备注: {text}")
+        if hasattr(self, 'parent_gui') and self.parent_gui:
+            self.parent_gui.status_bar.showMessage(f"✅ 已添加备注: {text}", 2000)
 
     def search_online(self):
         """在网上搜索快递单号"""
@@ -4511,16 +5341,14 @@ class ExpressItemWidget(QWidget):
         if not ok or not url.strip():
             return
         
-        # 显示进度提示
         progress_dialog = QProgressDialog("正在下载图片...", "取消", 0, 0, self)
         progress_dialog.setWindowTitle("下载中")
         progress_dialog.setWindowModality(Qt.WindowModal)
         progress_dialog.setMinimumDuration(0)
         progress_dialog.setValue(0)
         
-        # 使用线程下载
         class DownloadThread(QThread):
-            finished = Signal(bool, str, str)  # success, image_data, error_msg
+            finished = Signal(bool, str, str)
             
             def __init__(self, url):
                 super().__init__()
@@ -4553,7 +5381,6 @@ class ExpressItemWidget(QWidget):
         def on_download_finished(success, image_data, error_msg):
             progress_dialog.close()
             if success:
-                # 验证图片是否有效
                 try:
                     image_bytes = base64.b64decode(image_data)
                     pixmap = QPixmap()
@@ -4561,18 +5388,21 @@ class ExpressItemWidget(QWidget):
                         self.screenshot_changed.emit(self.express_id, image_data)
                         self.express_data['screenshot'] = image_data
                         self.update_display()
-                        QMessageBox.information(self, "成功", "图片已成功下载并添加")
+                        if hasattr(self, 'parent_gui') and self.parent_gui:
+                            self.parent_gui.status_bar.showMessage("✅ 图片已成功下载并添加", 3000)
                     else:
-                        QMessageBox.warning(self, "错误", "下载的文件不是有效的图片格式")
+                        if hasattr(self, 'parent_gui') and self.parent_gui:
+                            self.parent_gui.status_bar.showMessage("❌ 下载的文件不是有效的图片格式", 3000)
                 except Exception as e:
-                    QMessageBox.warning(self, "错误", f"图片处理失败：{str(e)}")
+                    if hasattr(self, 'parent_gui') and self.parent_gui:
+                        self.parent_gui.status_bar.showMessage(f"❌ 图片处理失败：{str(e)}", 3000)
             else:
-                QMessageBox.warning(self, "下载失败", error_msg)
+                if hasattr(self, 'parent_gui') and self.parent_gui:
+                    self.parent_gui.status_bar.showMessage(f"❌ 下载失败：{error_msg}", 3000)
         
         self.download_thread.finished.connect(on_download_finished)
         self.download_thread.start()
         
-        # 如果用户取消
         if progress_dialog.wasCanceled():
             if self.download_thread.isRunning():
                 self.download_thread.terminate()
@@ -4582,20 +5412,18 @@ class ExpressItemWidget(QWidget):
         """旋转截图"""
         screenshot = self.express_data.get('screenshot', '')
         if not screenshot:
-            QMessageBox.warning(self, "提示", "没有可旋转的截图")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("⚠️ 没有可旋转的截图", 2000)
             return
         
         try:
-            # 解码图片
             image_bytes = base64.b64decode(screenshot)
             pixmap = QPixmap()
             pixmap.loadFromData(image_bytes)
             
-            # 旋转图片
             transform = QTransform().rotate(angle)
             rotated_pixmap = pixmap.transformed(transform, Qt.SmoothTransformation)
             
-            # 保存旋转后的图片
             byte_array = QByteArray()
             buffer = QBuffer(byte_array)
             buffer.open(QIODevice.WriteOnly)
@@ -4603,35 +5431,34 @@ class ExpressItemWidget(QWidget):
             
             new_image_data = base64.b64encode(byte_array.data()).decode('utf-8')
             
-            # 更新
             self.screenshot_changed.emit(self.express_id, new_image_data)
             self.express_data['screenshot'] = new_image_data
             self.update_display()
             
-            QMessageBox.information(self, "成功", f"图片已旋转 {angle}°")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"✅ 图片已旋转 {angle}°", 2000)
             
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"旋转图片失败：{str(e)}")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"❌ 旋转图片失败：{str(e)}", 3000)
     
     def crop_screenshot(self):
         """裁剪截图"""
         screenshot = self.express_data.get('screenshot', '')
         if not screenshot:
-            QMessageBox.warning(self, "提示", "没有可裁剪的截图")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("⚠️ 没有可裁剪的截图", 2000)
             return
         
         try:
-            # 解码图片
             image_bytes = base64.b64decode(screenshot)
             pixmap = QPixmap()
             pixmap.loadFromData(image_bytes)
             
-            # 创建裁剪对话框
             dialog = CropImageDialog(pixmap, self)
             if dialog.exec() == QDialog.Accepted:
                 cropped_pixmap = dialog.get_cropped_image()
                 if cropped_pixmap:
-                    # 保存裁剪后的图片
                     byte_array = QByteArray()
                     buffer = QBuffer(byte_array)
                     buffer.open(QIODevice.WriteOnly)
@@ -4639,15 +5466,16 @@ class ExpressItemWidget(QWidget):
                     
                     new_image_data = base64.b64encode(byte_array.data()).decode('utf-8')
                     
-                    # 更新
                     self.screenshot_changed.emit(self.express_id, new_image_data)
                     self.express_data['screenshot'] = new_image_data
                     self.update_display()
                     
-                    QMessageBox.information(self, "成功", "图片已裁剪")
+                    if hasattr(self, 'parent_gui') and self.parent_gui:
+                        self.parent_gui.status_bar.showMessage("✅ 图片已裁剪", 2000)
                     
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"裁剪图片失败：{str(e)}")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"❌ 裁剪图片失败：{str(e)}", 3000)
     
     def export_screenshot(self, include_info: bool = False):
         """导出截图"""
@@ -4657,7 +5485,6 @@ class ExpressItemWidget(QWidget):
         
         tracking_num = self.express_data.get('tracking_number', 'unknown')
         
-        # 选择保存路径
         default_name = f"{tracking_num}_screenshot"
         if include_info:
             default_name += "_with_info"
@@ -4677,16 +5504,17 @@ class ExpressItemWidget(QWidget):
             pixmap.loadFromData(image_bytes)
             
             if include_info:
-                # 创建带信息的图片
                 info_pixmap = self.create_screenshot_with_info(pixmap)
                 info_pixmap.save(file_path)
             else:
                 pixmap.save(file_path)
             
-            QMessageBox.information(self, "成功", f"截图已保存到：\n{file_path}")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"✅ 截图已保存到：{file_path}", 3000)
             
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"保存截图失败：{str(e)}")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"❌ 保存截图失败：{str(e)}", 3000)
     
     def create_screenshot_with_info(self, original_pixmap: QPixmap) -> QPixmap:
         """创建带信息的截图"""
@@ -4743,7 +5571,8 @@ class ExpressItemWidget(QWidget):
         """复制截图到剪贴板"""
         screenshot = self.express_data.get('screenshot', '')
         if not screenshot:
-            QMessageBox.warning(self, "提示", "没有可复制的截图")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("⚠️ 没有可复制的截图", 2000)
             return
         
         try:
@@ -4754,13 +5583,16 @@ class ExpressItemWidget(QWidget):
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(pixmap)
             
-            QMessageBox.information(self, "成功", "截图已复制到剪贴板")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("✅ 截图已复制到剪贴板", 2000)
             
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"复制截图失败：{str(e)}")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage(f"❌ 复制截图失败：{str(e)}", 3000)
     
     def delete_screenshot(self):
         """删除截图"""
+        # 删除操作需要确认，保留弹窗
         reply = QMessageBox.question(
             self, "确认删除",
             "确定要删除此截图吗？",
@@ -4771,13 +5603,14 @@ class ExpressItemWidget(QWidget):
             self.screenshot_changed.emit(self.express_id, "")
             self.express_data['screenshot'] = ""
             self.update_display()
-            QMessageBox.information(self, "成功", "截图已删除")
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("✅ 截图已删除", 2000)
     
     def show_screenshot_info(self):
         """显示截图信息"""
         screenshot = self.express_data.get('screenshot', '')
         if not screenshot:
-            QMessageBox.information(self, "截图信息", "暂无截图")
+            self.parent_gui.status_bar.showMessage("✅ 暂无截图", 3000)
             return
         
         try:
@@ -4853,7 +5686,7 @@ class ExpressItemWidget(QWidget):
                 pixmap = QPixmap.fromImage(image)
         
         if pixmap.isNull():
-            QMessageBox.warning(self, "提示", "剪贴板中没有图片！")
+            self.parent_gui.status_bar.showMessage("⚠️ 剪贴板中没有图片！", 3000)
             return
             
         try:
@@ -4867,7 +5700,7 @@ class ExpressItemWidget(QWidget):
             self.screenshot_changed.emit(self.express_id, image_data)
             self.express_data['screenshot'] = image_data
             self.update_display()
-            QMessageBox.information(self, "成功", "截图已从剪贴板添加")
+            self.parent_gui.status_bar.showMessage("✅ 截图已从剪贴板添加", 3000)
         except Exception as e:
             QMessageBox.warning(self, "错误", f"处理剪贴板图片失败: {e}")
                 
@@ -4898,6 +5731,7 @@ class ExpressItemWidget(QWidget):
         
     def on_delete_click(self):
         """点击删除"""
+        # 删除操作需要确认，保留弹窗
         reply = QMessageBox.question(
             self, "确认删除",
             f"确定要删除快递 {self.express_data.get('tracking_number', '')} 吗？",
@@ -4906,6 +5740,27 @@ class ExpressItemWidget(QWidget):
         
         if reply == QMessageBox.Yes:
             self.delete_requested.emit(self.express_id)
+
+
+    def apply_search_highlight(self, is_match: bool):
+        """应用搜索高亮样式"""
+        if is_match:
+            self.setStyleSheet(f"""
+                ExpressItemWidget {{
+                    background-color: {MacaronColors.YELLOW_CREAM.name()} !important;
+                    border: 3px solid {MacaronColors.ORANGE_PEACH.name()} !important;
+                    border-radius: 10px;
+                    padding: 5px;
+                }}
+                ExpressItemWidget:hover {{
+                    background-color: {MacaronColors.YELLOW_HONEY.name()} !important;
+                    border-width: 3px !important;
+                }}
+            """)
+        else:
+            self.apply_item_style()
+
+
 
 
 class RemarkEditDialog(QDialog):
@@ -5107,7 +5962,7 @@ class ExpressDetailDialog(QDialog):
         company_code = self.express_data.get('company_code', '') if self.express_data else ''
         
         if not tracking_num:
-            QMessageBox.warning(self, "提示", "无法获取快递单号")
+            self.parent_gui.status_bar.showMessage("⚠️ 无法获取快递单号", 3000)
             return
             
         if not self.parent_gui.customer or not self.parent_gui.key:
@@ -5133,7 +5988,7 @@ class ExpressDetailDialog(QDialog):
                         f"当前账号额度已用完，已自动切换到备用账号\n"
                         f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}")
                 else:
-                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    self.parent_gui.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
                     return
             
         self.refresh_btn.setEnabled(False)
@@ -5157,7 +6012,7 @@ class ExpressDetailDialog(QDialog):
             if hasattr(self.parent_gui, 'update_express_summary'):
                 self.parent_gui.update_express_summary(result['data'])
             self.load_data()
-            QMessageBox.information(self, "成功", "快递信息已更新")
+            self.parent_gui.status_bar.showMessage("✅ 快递信息已更新", 3000)
         else:
             error_msg = result.get('error', '未知错误')
             
@@ -5526,11 +6381,12 @@ class ExpressCategoryWidget(QWidget):
         self.update_count()
         
     def update_count(self):
-        """更新计数"""
-        self.count_label.setText(f"({len(self.express_items)})")
+        """更新计数（只统计可见条目）"""
+        visible_count = sum(1 for item in self.express_items if item.isVisible())
+        self.count_label.setText(f"({visible_count})")
 
 
-class UserLoginDialogPro(QDialog):
+class UserLoginDialogPro(DialogWithStatusBar):
     """用户登录对话框"""
     
     def __init__(self, user_manager: UserManagerPro, parent=None):
@@ -5544,7 +6400,7 @@ class UserLoginDialogPro(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle(f"{ProjectInfo.NAME} - 选择用户")
-        self.setFixedSize(500, 400)
+        self.setFixedSize(500, 450)
         self.setModal(True)
         
         layout = QVBoxLayout()
@@ -5610,6 +6466,9 @@ class UserLoginDialogPro(QDialog):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
         
+        # 添加状态栏
+        self.setup_status_bar(layout)
+
         self.setLayout(layout)
         
     def load_users(self):
@@ -5647,10 +6506,10 @@ class UserLoginDialogPro(QDialog):
                 self.progress_bar.setVisible(False)
                 
                 if success:
-                    QMessageBox.information(self, "成功", message)
+                    self.show_status(f"✅ {message}", 3000)
                     self.load_users()
                 else:
-                    QMessageBox.warning(self, "失败", message)
+                    self.show_status(f"❌ {message}", 3000)
                     
             QTimer.singleShot(100, add_user_thread)
             
@@ -5658,7 +6517,7 @@ class UserLoginDialogPro(QDialog):
         """修改用户名"""
         current_item = self.user_list.currentItem()
         if not current_item:
-            QMessageBox.warning(self, "提示", "请先选择要修改的用户")
+            self.show_status("⚠️ 请先选择要修改的用户", 3000)
             return
             
         user_id = current_item.data(Qt.UserRole)
@@ -5677,10 +6536,10 @@ class UserLoginDialogPro(QDialog):
                 self.progress_bar.setVisible(False)
                 
                 if success:
-                    QMessageBox.information(self, "成功", message)
+                    self.show_status(f"✅ {message}", 3000)
                     self.load_users()
                 else:
-                    QMessageBox.warning(self, "失败", message)
+                    self.show_status(f"❌ {message}", 3000)
                     
             QTimer.singleShot(100, edit_user_thread)
             
@@ -5688,7 +6547,7 @@ class UserLoginDialogPro(QDialog):
         """删除用户"""
         current_item = self.user_list.currentItem()
         if not current_item:
-            QMessageBox.warning(self, "提示", "请先选择要删除的用户")
+            self.show_status("⚠️ 请先选择要删除的用户", 3000)
             return
             
         user_id = current_item.data(Qt.UserRole)
@@ -5709,10 +6568,10 @@ class UserLoginDialogPro(QDialog):
                 self.progress_bar.setVisible(False)
                 
                 if success:
-                    QMessageBox.information(self, "成功", message)
+                    self.show_status(f"✅ {message}", 3000)
                     self.load_users()
                 else:
-                    QMessageBox.warning(self, "失败", message)
+                    self.show_status(f"❌ {message}", 3000)
                     
             QTimer.singleShot(100, delete_user_thread)
             
@@ -5720,7 +6579,7 @@ class UserLoginDialogPro(QDialog):
         """登录选中的用户"""
         current_item = self.user_list.currentItem()
         if not current_item:
-            QMessageBox.warning(self, "提示", "请先选择用户")
+            self.show_status("⚠️ 请先选择用户", 3000)
             return
             
         self.selected_user_id = current_item.data(Qt.UserRole)
@@ -6062,10 +6921,10 @@ class BackupRestoreDialogPro(QDialog):
         
         if reply == QMessageBox.Yes:
             if self.backup_manager.delete_backup(backup['path']):
-                QMessageBox.information(self, "成功", "备份已删除")
+                self.parent_gui.status_bar.showMessage("✅ 备份已删除", 3000)
                 self.load_backups()
             else:
-                QMessageBox.critical(self, "失败", "删除备份失败")
+                self.parent_gui.status_bar.showMessage("❌ 删除备份失败", 5000)
                 
     def show_backup_settings(self):
         """显示备份设置"""
@@ -6524,7 +7383,7 @@ class RebuildAllWorker(QObject):
             self.finished.emit(False, f"重建失败：{str(e)}")
 
 
-class BatchImportDialog(QDialog):
+class BatchImportDialog(DialogWithStatusBar): 
     """批量导入快递单号对话框"""
     
     def __init__(self, company_codes: dict, parent=None):
@@ -6536,7 +7395,7 @@ class BatchImportDialog(QDialog):
         
     def init_ui(self):
         self.setWindowTitle("批量导入快递单号")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(700, 650)
         self.setModal(True)
         
         layout = QVBoxLayout()
@@ -6690,6 +7549,9 @@ class BatchImportDialog(QDialog):
         
         layout.addLayout(btn_layout)
         
+        # 添加状态栏
+        self.setup_status_bar(layout)
+
         self.setLayout(layout)
         
     def on_method_changed(self, index: int):
@@ -6732,7 +7594,7 @@ class BatchImportDialog(QDialog):
                     continue
                     
             if content is None:
-                QMessageBox.warning(self, "错误", "无法识别文件编码，请确保文件为文本格式")
+                self.show_status("⚠️ 无法识别文件编码，请确保文件为文本格式", 3000)
                 return
                 
             self.method_combo.setCurrentIndex(1)
@@ -6741,7 +7603,7 @@ class BatchImportDialog(QDialog):
             QTimer.singleShot(200, self.parse_numbers)
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"读取文件失败：{e}")
+            self.show_status(f"❌ 读取文件失败：{e}", 5000)
             
     def get_separator(self) -> Optional[str]:
         """获取当前分隔符"""
@@ -6800,22 +7662,22 @@ class BatchImportDialog(QDialog):
         if method == 0:
             file_path = self.file_path_edit.text().strip()
             if not file_path:
-                QMessageBox.warning(self, "提示", "请先选择文件")
+                self.show_status("⚠️ 请先选择文件", 3000)
                 return
             if not os.path.exists(file_path):
-                QMessageBox.warning(self, "提示", "文件不存在")
+                self.show_status("⚠️ 请先选择文件", 3000)
                 return
             self.load_file_content(file_path)
             return
             
         content = self.text_edit.toPlainText().strip()
         if not content:
-            QMessageBox.warning(self, "提示", "请输入快递单号")
+            self.show_status("⚠️ 请输入快递单号", 3000)
             return
             
         separator = self.get_separator()
         if not separator:
-            QMessageBox.warning(self, "提示", "请输入自定义分隔符")
+            self.show_status("⚠️ 请输入自定义分隔符", 3000)
             return
             
         if separator == '\n':
@@ -6905,6 +7767,8 @@ class BatchImportDialog(QDialog):
             
         self.import_btn.setEnabled(valid_count > 0)
         self.preview_table.resizeColumnsToContents()
+
+        self.show_status(f"✅ 解析完成：{valid_count} 个有效单号", 2000)
         
     def preview_numbers(self):
         """预览解析结果"""
@@ -6925,207 +7789,6 @@ class BatchImportDialog(QDialog):
         """获取导入的单号列表"""
         return self.imported_numbers
 
-
-class SettingsDialogPro(QDialog):
-    """设置对话框"""
-    
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.init_ui()
-        self.setStyleSheet(MacaronStyle.get_main_style())
-        
-    def init_ui(self):
-        """初始化UI"""
-        self.setWindowTitle("系统设置")
-        self.setMinimumSize(500, 550)
-        
-        layout = QVBoxLayout()
-        layout.setSpacing(15)
-        
-        account_group = QGroupBox("API账号管理")
-        account_layout = QVBoxLayout()
-        
-        account_info_label = QLabel("管理多个API账号，支持额度用完自动切换")
-        account_layout.addWidget(account_info_label)
-        
-        manage_account_btn = QPushButton("管理API账号")
-        manage_account_btn.clicked.connect(self.manage_accounts)
-        account_layout.addWidget(manage_account_btn)
-        
-        account_group.setLayout(account_layout)
-        layout.addWidget(account_group)
-        
-        delivery_group = QGroupBox("时效数据管理")
-        delivery_layout = QVBoxLayout()
-        
-        delivery_info_label = QLabel("基于历史签收数据预估送达时间")
-        delivery_layout.addWidget(delivery_info_label)
-        
-        stats_layout = QHBoxLayout()
-        self.stats_label = QLabel("加载中...")
-        stats_layout.addWidget(self.stats_label)
-        stats_layout.addStretch()
-        delivery_layout.addLayout(stats_layout)
-        
-        clear_history_btn = QPushButton("清空时效历史数据")
-        clear_history_btn.clicked.connect(self.clear_delivery_history)
-        delivery_layout.addWidget(clear_history_btn)
-        
-        delivery_group.setLayout(delivery_layout)
-        layout.addWidget(delivery_group)
-        
-        node_group = QGroupBox("节点运输历史数据")
-        node_layout = QVBoxLayout()
-        
-        node_info_label = QLabel("基于历史节点运输数据预估各路段耗时")
-        node_layout.addWidget(node_info_label)
-        
-        node_stats_layout = QHBoxLayout()
-        self.node_stats_label = QLabel("加载中...")
-        node_stats_layout.addWidget(self.node_stats_label)
-        node_stats_layout.addStretch()
-        node_layout.addLayout(node_stats_layout)
-        
-        clear_node_btn = QPushButton("清空节点历史数据")
-        clear_node_btn.clicked.connect(self.clear_node_history)
-        node_layout.addWidget(clear_node_btn)
-        
-        node_group.setLayout(node_layout)
-        layout.addWidget(node_group)
-        
-        backup_group = QGroupBox("备份设置")
-        backup_layout = QVBoxLayout()
-        
-        max_layout = QHBoxLayout()
-        max_layout.addWidget(QLabel("最大备份数量:"))
-        self.max_backups_spin = QSpinBox()
-        self.max_backups_spin.setRange(1, 100)
-        self.max_backups_spin.setValue(self.parent.backup_manager.max_backups)
-        max_layout.addWidget(self.max_backups_spin)
-        max_layout.addStretch()
-        backup_layout.addLayout(max_layout)
-        
-        self.auto_backup_check = QCheckBox("启用自动备份（每小时）")
-        self.auto_backup_check.setChecked(self.parent.backup_timer.isActive())
-        backup_layout.addWidget(self.auto_backup_check)
-        
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("备份目录:"))
-        self.dir_label = QLabel(str(self.parent.backup_manager.backup_dir))
-        dir_layout.addWidget(self.dir_label)
-        dir_layout.addStretch()
-        backup_layout.addLayout(dir_layout)
-        
-        backup_group.setLayout(backup_layout)
-        layout.addWidget(backup_group)
-        
-        debug_layout = QHBoxLayout()
-        self.debug_check = QCheckBox("启用调试模式")
-        self.debug_check.setChecked(DEBUG_MODE)
-        debug_layout.addWidget(self.debug_check)
-        debug_layout.addStretch()
-        layout.addLayout(debug_layout)
-        
-        layout.addStretch()
-        
-        btn_layout = QHBoxLayout()
-        
-        save_btn = QPushButton("保存设置")
-        save_btn.clicked.connect(self.save_settings)
-        btn_layout.addWidget(save_btn)
-        
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        
-        layout.addLayout(btn_layout)
-        
-        self.setLayout(layout)
-        
-        self.load_delivery_stats()
-        self.load_node_stats()
-        
-    def load_delivery_stats(self):
-        """加载时效统计"""
-        if self.parent.current_user_db:
-            sql = "SELECT COUNT(*) as count FROM delivery_history"
-            result = self.parent.current_user_db.execute_query(sql)
-            if result:
-                count = result[0]['count']
-                self.stats_label.setText(f"已记录 {count} 条时效数据")
-                
-    def load_node_stats(self):
-        """加载节点统计"""
-        if self.parent.current_user_db:
-            sql = "SELECT COUNT(*) as count FROM node_transit_history"
-            result = self.parent.current_user_db.execute_query(sql)
-            if result:
-                count = result[0]['count']
-                self.node_stats_label.setText(f"已记录 {count} 条节点运输数据")
-                
-    def clear_delivery_history(self):
-        """清空时效历史数据"""
-        reply = QMessageBox.question(
-            self, "确认清空",
-            "确定要清空所有时效历史数据吗？\n清空后预估功能将使用默认值。",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            if self.parent.current_user_db:
-                sql = "DELETE FROM delivery_history"
-                self.parent.current_user_db.execute_update(sql)
-                self.load_delivery_stats()
-                QMessageBox.information(self, "成功", "时效历史数据已清空")
-                
-    def clear_node_history(self):
-        """清空节点历史数据"""
-        reply = QMessageBox.question(
-            self, "确认清空",
-            "确定要清空所有节点运输历史数据吗？\n清空后节点时间预估将使用默认值。",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            if self.parent.current_user_db:
-                sql = "DELETE FROM node_transit_history"
-                self.parent.current_user_db.execute_update(sql)
-                self.load_node_stats()
-                QMessageBox.information(self, "成功", "节点历史数据已清空")
-        
-    def manage_accounts(self):
-        """管理API账号"""
-        if self.parent.current_user_db:
-            dialog = ApiAccountDialog(self.parent.current_user_db, self)
-            if dialog.exec() == QDialog.Accepted:
-                if self.parent.api_account_manager:
-                    self.parent.api_account_manager.load_accounts()
-                    self.parent.load_current_api_account()
-                    self.parent.update_api_account_display()
-        else:
-            QMessageBox.warning(self, "提示", "数据库未连接")
-            
-    def save_settings(self):
-        """保存设置"""
-        self.parent.backup_manager.set_max_backups(self.max_backups_spin.value())
-        self.parent.user_manager.save_user_setting("max_backups", str(self.max_backups_spin.value()))
-        
-        auto_backup = self.auto_backup_check.isChecked()
-        if auto_backup:
-            self.parent.backup_timer.start()
-        else:
-            self.parent.backup_timer.stop()
-        self.parent.user_manager.save_user_setting("auto_backup", str(auto_backup).lower())
-    
-        debug_mode = self.debug_check.isChecked()
-        self.parent.user_manager.save_user_setting("debug_mode", "1" if debug_mode else "0")
-        
-        global DEBUG_MODE
-        DEBUG_MODE = debug_mode
-        
-        QMessageBox.information(self, "成功", "设置已保存")
 
 
 class ExpressQueryProGUI(QMainWindow):
@@ -7150,7 +7813,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.api_account_manager = None
         self.delivery_estimator = None
         self.node_analyzer = None
-        
+
         self.company_codes = {
             "自动识别": "",
             # 国内主流快递
@@ -7203,7 +7866,10 @@ class ExpressQueryProGUI(QMainWindow):
             'remaining': 0,
             'reset_time': ''
         }
-        
+
+        self.is_filtered = False  # 是否处于过滤状态
+        self.filtered_items = {}  # 保存过滤前的原始条目 {category_key: [items]}
+
         self.backup_timer = QTimer()
         self.backup_timer.timeout.connect(self.auto_backup)
         self.backup_timer.start(3600000)  # 每小时备份
@@ -7224,6 +7890,8 @@ class ExpressQueryProGUI(QMainWindow):
         
         # 应用全局样式
         self.setStyleSheet(MacaronStyle.get_main_style())
+        
+
 
     def check_quota_reset(self):
         """检查是否需要重置配额"""
@@ -7377,7 +8045,15 @@ class ExpressQueryProGUI(QMainWindow):
         # 设置全局快捷键
         search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         search_shortcut.activated.connect(self.focus_global_search)
-        
+
+        # 添加清空搜索的快捷键
+        clear_search_shortcut = QShortcut(QKeySequence("Ctrl+Shift+F"), self)
+        clear_search_shortcut.activated.connect(self.clear_global_search)
+
+        # 添加 ESC 键清除搜索的快捷键
+        esc_shortcut = QShortcut(QKeySequence("Esc"), self)
+        esc_shortcut.activated.connect(self.on_escape_clear_search)
+
         for i in range(1, 6):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             shortcut.activated.connect(lambda idx=i-1: self.main_tab_widget.setCurrentIndex(idx))
@@ -7387,6 +8063,12 @@ class ExpressQueryProGUI(QMainWindow):
 
         copy_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
         copy_shortcut.activated.connect(self.copy_selected_content)
+
+
+    def on_escape_clear_search(self):
+        """ESC键清除搜索（仅当搜索框有焦点或处于过滤状态时）"""
+        if self.global_search.hasFocus() or self.is_filtered:
+            self.clear_global_search()
 
     def copy_selected_content(self):
         """复制当前选中的内容"""
@@ -7471,9 +8153,12 @@ class ExpressQueryProGUI(QMainWindow):
         toolbar_layout.addWidget(search_label)
         
         self.global_search = QLineEdit()
-        self.global_search.setPlaceholderText("输入单号、公司...")
-        self.global_search.setMinimumWidth(250)
-        self.global_search.textChanged.connect(self.on_global_search)
+        self.global_search.setPlaceholderText("输入单号、公司、状态、备注... (实时过滤，ESC清除)")
+        self.global_search.setMinimumWidth(280)
+        # 实时输入时只做高亮过滤（不弹窗）
+        self.global_search.textChanged.connect(self.on_global_search_filter)
+        # 按回车时弹出搜索范围选择对话框
+        self.global_search.returnPressed.connect(self.on_global_search)
         toolbar_layout.addWidget(self.global_search)
         
         switch_user_btn = QPushButton("🔄 切换用户")
@@ -7495,6 +8180,98 @@ class ExpressQueryProGUI(QMainWindow):
         toolbar_layout.addWidget(settings_btn)
         
         parent_layout.addWidget(toolbar_widget)
+
+    def on_global_search_filter(self):
+        """实时过滤 - 只显示符合条件的快递条目"""
+        search_text = self.global_search.text().strip()
+        
+        if not search_text:
+            # 清空搜索时，恢复显示所有条目
+            self.clear_summary_filter()
+            self.status_bar.showMessage("就绪", 2000)
+            return
+        
+        search_lower = search_text.lower()
+        match_count = 0
+        first_match_item = None
+        
+        # 如果是第一次过滤，先保存原始状态
+        if not self.is_filtered:
+            self.save_original_items()
+            self.is_filtered = True
+        
+        # 遍历所有分类
+        for category_key, widget in self.category_widgets.items():
+            # 获取该分类下的所有条目
+            items_to_keep = []
+            items_to_hide = []
+            
+            for item in widget.express_items:
+                data = item.express_data
+                tracking_num = (data.get('tracking_number') or '').lower()
+                company_name = (data.get('company_name') or '').lower()
+                status = (data.get('status') or '').lower()
+                remark = (data.get('remark') or '').lower()
+                latest_track = (data.get('latest_track') or '').lower()
+                
+                # 检查是否匹配
+                is_match = (search_lower in tracking_num or 
+                        search_lower in company_name or 
+                        search_lower in status or 
+                        search_lower in remark or 
+                        search_lower in latest_track)
+                
+                if is_match:
+                    match_count += 1
+                    items_to_keep.append(item)
+                    # 记录第一个匹配的条目
+                    if first_match_item is None:
+                        first_match_item = (widget, item)
+                else:
+                    items_to_hide.append(item)
+            
+            # 隐藏不匹配的条目
+            for item in items_to_hide:
+                item.setVisible(False)
+            
+            # 确保匹配的条目可见
+            for item in items_to_keep:
+                item.setVisible(True)
+            
+            # 如果分类中有匹配项，自动展开该分类
+            if items_to_keep and widget.is_collapsed:
+                widget.set_collapsed(False)
+            
+            # 更新分类计数（只显示可见条目数）
+            widget.update_count()
+        
+        # 更新状态栏提示
+        if match_count > 0:
+            self.status_bar.showMessage(f"🔍 找到 {match_count} 条匹配结果 (按ESC或清空搜索框恢复)", 0)
+            
+            # 滚动到第一个匹配的条目
+            if first_match_item:
+                widget, item = first_match_item
+                QTimer.singleShot(100, lambda: self.scroll_to_item(widget, item))
+        else:
+            self.status_bar.showMessage(f"🔍 未找到匹配结果 (ESC或清空搜索框恢复)", 0)
+
+    def clear_summary_filter(self):
+        """清除过滤，恢复显示所有条目"""
+        if not self.is_filtered:
+            return
+        
+        for category_key, widget in self.category_widgets.items():
+            # 恢复所有条目的可见性
+            for item in widget.express_items:
+                item.setVisible(True)
+            
+            # 更新分类计数
+            widget.update_count()
+        
+        self.is_filtered = False
+        self.status_bar.showMessage("已恢复显示所有快递", 2000)
+        
 
     def show_about(self):
         """显示关于对话框"""
@@ -8014,102 +8791,113 @@ class ExpressQueryProGUI(QMainWindow):
     def get_state_category(self, state: str, context: str = "") -> str:
         """
         根据状态码和物流内容获取分类
+        判断优先级：已签收 > 驿站/代收点 > 派件中 > 待揽件 > 已揽收 > 疑难件 > 退件 > 清关中 > 在途中
         """
         state = str(state)
         context_lower = context.lower() if context else ""
         
-        # ====== 已签收相关 ======
-        # 优先判断签收，因为有些物流在签收时也会有驿站信息
+        # ========== 1. 优先判断：已签收 ==========
         # 状态码: 3-已签收, 40-妥投, 75-已完成, 85-已完结
         if state in ['3', '40', '75', '85']:
             return 'signed'
         
-        # 通过内容判断是否已签收
-        sign_keywords = ['签收', '已收', '妥投', '已签收', '本人签收', '他人签收', '快递员签收']
+        # 精确匹配已签收关键词（排除"请签收"、"领取签收"等未完成状态）
+        # 注意：不使用单独的"签收"二字，避免误判
+        sign_keywords = [
+            '已签收', '本人签收', '他人签收', '快递员签收', 
+            '签收人凭取货码签收', '凭取货码签收', '已取件',
+            '已妥投', '签收成功', '已收件人签收', '已签收完成',
+            '代收已签收', '家人代收', '同事代收', '前台代收', '物业代收'
+        ]
+        
         for keyword in sign_keywords:
             if keyword in context_lower or keyword in context:
                 return 'signed'
-        
-        # ====== 已到驿站/代收点 ======
-        # 驿站相关关键词（优先级高于在途中和派件中）
+    
+        # ========== 2. 已到驿站/代收点 ==========
         station_keywords = [
             '驿站', '菜鸟', '丰巢', '快递柜', '自提柜', '代收点', '妈妈驿站', 
             '兔喜', '超市', '代理点', '自提', '代收', '投柜', '出柜',
             '存局', '已送达', '便利店', '物业', '门卫', '快递点', '菜鸟驿站',
             '菜鸟裹裹', '取件码', '凭取件码', '请取件', '可取件', '待取件',
             '快递超市', '邻里驿站', '熊猫快收', '速递易', '云柜', '日日顺',
-            '蜂巢', 'e栈', '收件宝', '近邻宝', '格格货栈', '乐收'
+            '蜂巢', 'e栈', '收件宝', '近邻宝', '格格货栈', '乐收',
+            '已暂存至', '暂存至'
         ]
         
         for keyword in station_keywords:
             if keyword in context_lower or keyword in context:
                 return 'arrived'
-        
-        # ====== 派件中相关 ======
+    
+        # ========== 3. 派件中相关 ==========
         # 状态码: 5-派件中, 15-派件, 39-投递, 41-未妥投, 43-退回未妥投, 45-预约投递
         if state in ['5', '15', '39', '41', '43', '45']:
             return 'delivering'
         
         # 通过内容判断派件中
-        delivering_keywords = ['派件', '派送', '投递', '派送中', '派件中', '正在派送', '快递员派送']
+        delivering_keywords = ['派件', '派送', '投递', '派送中', '派件中', '正在派送', '快递员派送', '开始派送']
         for keyword in delivering_keywords:
             if keyword in context_lower or keyword in context:
                 return 'delivering'
         
-        # ====== 待揽件/待处理 ======
-        # 刚添加，还没有物流信息
-        if not context or context == "等待揽件" or context == "暂无物流信息，等待揽件":
+        # ========== 4. 待揽件/待处理 ==========
+        # 注意：这个判断要放在已揽收之前
+        # 状态码为0且没有物流内容，或者明确是待揽件状态
+        if (state == '0' and (not context or context == "等待揽件" or "暂无物流信息" in context)):
             return 'pending'
         
-        # ====== 已揽收相关 ======
+        # 明确是待揽件的内容
+        pending_keywords = ['等待揽件', '暂无物流信息', '待揽件', '未揽件', '等待收件']
+        for keyword in pending_keywords:
+            if keyword in context_lower or keyword in context:
+                return 'pending'
+        
+        
+        # ========== 5. 已揽收相关 ==========
         # 状态码: 1-已揽收, 12-收件, 13-发件, 16-取件, 37-揽件, 38-收寄, 71-已接单, 72-已取件, 73-已收件
         if state in ['1', '12', '13', '16', '37', '38', '71', '72', '73']:
             return 'picked'
         
         # 通过内容判断已揽收
-        picked_keywords = ['揽收', '已揽件', '收件', '取件', '已收寄', '已接单', '已取件']
+        picked_keywords = ['揽收', '已揽件', '收件', '取件', '已收寄', '已接单', '已取件', '揽收成功']
         for keyword in picked_keywords:
             if keyword in context_lower or keyword in context:
                 return 'picked'
         
-        # ====== 疑难/问题件相关 ======
+        # ========== 6. 疑难/问题件相关 ==========
         # 状态码: 2-疑难, 11-清关异常, 19-问题件, 35-海关查验, 36-海关扣留
         if state in ['2', '11', '19', '35', '36']:
             return 'problem'
         
-        # 更精确的疑难件关键词（排除"物流问题无需找商家"这类误判）
-        problem_keywords = ['疑难件', '问题件', '物流异常', '快件异常', '滞留件', '超时件']
+        # 精确的疑难件关键词
+        problem_keywords = ['疑难件', '问题件', '物流异常', '快件异常', '滞留件', '超时件', '未妥投', '未投妥']
         for keyword in problem_keywords:
             if keyword in context_lower or keyword in context:
                 return 'problem'
         
-        # 未妥投（需要精确匹配）
-        if '未妥投' in context or '未投妥' in context:
-            return 'problem'
-        
-        # ====== 退件相关 ======
+        # ========== 7. 退件相关 ==========
         # 状态码: 4-退签, 6-退回, 42-退回妥投, 90-已退回, 98-已退货
         if state in ['4', '6', '42', '90', '98']:
             return 'returned'
         
         # 通过内容判断退件
-        returned_keywords = ['退回', '退件', '退签', '退货', '返程']
+        returned_keywords = ['退回', '退件', '退签', '退货', '返程', '原路返回']
         for keyword in returned_keywords:
             if keyword in context_lower or keyword in context:
                 return 'returned'
         
-        # ====== 清关相关 ======
+        # ========== 8. 清关相关 ==========
         # 状态码: 8-待清关, 9-清关中, 10-已清关, 34-海关放行
         if state in ['8', '9', '10', '34']:
             return 'customs'
         
         # 通过内容判断清关
-        customs_keywords = ['清关', '海关', '报关', '通关']
+        customs_keywords = ['清关', '海关', '报关', '通关', '海关放行']
         for keyword in customs_keywords:
             if keyword in context_lower or keyword in context:
                 return 'customs'
         
-        # ====== 在途中相关 ======
+        # ========== 9. 在途中相关（默认分类） ==========
         # 状态码: 0-在途中, 7-转单, 14-到件, 17-投柜, 18-出柜, 20-入库, 21-出库, 22-安检, 23-装车, 24-卸车
         # 25-封发, 26-开拆, 27-离开, 28-到达, 29-中转, 30-交航, 31-起飞, 32-降落, 33-提货
         # 44-存局, 46-自提, 47-代收, 48-代理点
@@ -8117,7 +8905,6 @@ class ExpressQueryProGUI(QMainWindow):
                         '25', '26', '27', '28', '29', '30', '31', '32', '33',
                         '44', '46', '47', '48']
         
-        state_int = int(state) if state.isdigit() else 0
         if state in transit_states:
             return 'transit'
         
@@ -8127,9 +8914,9 @@ class ExpressQueryProGUI(QMainWindow):
             if keyword in context_lower or keyword in context:
                 return 'transit'
         
-        # ====== 默认分类 ======
+        # ========== 默认分类 ==========
         # 如果都不匹配，默认归类为在途中
-        return 'transit'
+        return 'pending' if state == '0' else 'transit'
 
         
     def get_state_text(self, state: str) -> str:
@@ -8243,12 +9030,12 @@ class ExpressQueryProGUI(QMainWindow):
             sql = "UPDATE express_summary SET is_deleted = 1, last_update = ? WHERE id = ?"
             if self.user_manager.current_user_db.execute_update(sql, (current_time, express_id)):
                 self.load_summary_data()
-                self.status_bar.showMessage("快递已删除", 3000)
+                self.status_bar.showMessage("🗑️ 快递已删除", 3000)
             
     def on_single_refresh(self, tracking_num: str, company_code: str):
         """单个快递刷新"""
         if not self.customer or not self.key:
-            QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
+            self.status_bar.showMessage("⚠️ 未配置API账号，请先在设置中添加账号", 3000)
             return
         
         # 检查当前账号是否可用
@@ -8262,7 +9049,7 @@ class ExpressQueryProGUI(QMainWindow):
                     usage_info = self.api_account_manager.get_usage_info()
                     self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
                 else:
-                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    self.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
                     return
             
         # 显示进度条
@@ -8382,7 +9169,7 @@ class ExpressQueryProGUI(QMainWindow):
         """手动添加快递 - 添加进度条"""
         tracking_num = self.manual_tracking_input.text().strip()
         if not tracking_num:
-            QMessageBox.warning(self, "提示", "请输入快递单号！")
+            self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
             return
             
         company_name = self.manual_company_combo.currentText()
@@ -8392,7 +9179,7 @@ class ExpressQueryProGUI(QMainWindow):
             check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
             existing = self.user_manager.current_user_db.execute_query(check_sql, (tracking_num,))
             if existing:
-                QMessageBox.information(self, "提示", "该快递单号已存在于汇总中")
+                self.status_bar.showMessage("✅ 该快递单号已存在于汇总中", 3000)
                 return
                 
         # 显示进度条
@@ -8451,7 +9238,7 @@ class ExpressQueryProGUI(QMainWindow):
                 return
                 
         if not to_import:
-            QMessageBox.information(self, "提示", "所有单号都已存在于汇总中")
+            self.status_bar.showMessage("✅ 所有单号都已存在于汇总中", 3000)
             return
             
         # 确认导入
@@ -8559,38 +9346,79 @@ class ExpressQueryProGUI(QMainWindow):
         success_count = sum(1 for r in self.batch_import_results if r['success'])
         fail_count = len(self.batch_import_results) - success_count
         
-        # 刷新汇总显示
         self.load_summary_data()
         
-        # 显示结果摘要
-        summary = f"批量导入完成！\n\n成功：{success_count} 个\n失败：{fail_count} 个"
+        # 批量导入完成只需要状态栏提示，不需要弹窗
+        self.status_bar.showMessage(f"📦 批量导入完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
         
-        if fail_count > 0:
+        # 如果有失败的，可以在控制台输出详情（调试模式）
+        if fail_count > 0 and DEBUG_MODE:
             failed_list = [f"{r['number']}: {r['message']}" for r in self.batch_import_results if not r['success']]
-            detail = "\n\n失败详情（前10个）：\n" + "\n".join(failed_list[:10])
+            print("失败详情：")
+            for item in failed_list[:10]:
+                print(f"  {item}")
             if len(failed_list) > 10:
-                detail += f"\n... 共 {len(failed_list)} 个失败"
-            summary += detail
-
-        print(summary)  # 在控制台输出结果摘要
-        QMessageBox.information(self, "批量导入完成", summary)
-        self.status_bar.showMessage(f"批量导入完成：成功 {success_count}，失败 {fail_count}", 5000)
+                print(f"  ... 共 {len(failed_list)} 个失败")
 
 
     def on_manual_add_finished(self, result: dict, tracking_num: str, company_code: str, company_name: str):
-        """手动添加完成 - 隐藏进度条"""
+        """手动添加完成"""
         self.global_progress.setVisible(False)
         
         if result.get('success'):
+            is_pending = result.get('is_pending', False)
             self.add_to_summary(result['data'], company_name)
             self.manual_tracking_input.clear()
-            self.status_bar.showMessage(f"{tracking_num} 已添加到汇总", 3000)
+            
+            if is_pending:
+                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总（等待揽件）", 5000)
+            else:
+                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总", 3000)
+            
             self.load_summary_data()
         else:
             error_msg = result.get('error', '未知错误')
-            print(f"查询失败：{error_msg}")
-            QMessageBox.critical(self, "添加失败", f"查询失败：{error_msg}")
-            self.status_bar.showMessage("添加失败", 3000)
+            
+            if DEBUG_MODE:
+                print(f"手动添加失败：{error_msg}")
+            
+            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+            
+            allow_add_keywords = ['没该功能权限', '权限', '单号不存在', '暂无轨迹', '暂无物流信息', '未揽件', '无物流']
+            should_offer_add = any(keyword in error_msg for keyword in allow_add_keywords)
+            
+            if should_offer_add:
+                # 这里需要用户选择，保留弹窗
+                reply = QMessageBox.question(
+                    self, "查询失败",
+                    f"API查询失败：{error_msg}\n\n"
+                    f"快递单号：{tracking_num}\n"
+                    f"快递公司：{company_name}\n\n"
+                    f"可能是单号有效但API暂时无法查询（如权限不足或未揽件）。\n\n"
+                    f"是否仍然将此单号添加到快递汇总？\n"
+                    f"（添加后可以稍后刷新获取物流信息）",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    pending_data = {
+                        'nu': tracking_num,
+                        'com': company_code,
+                        'state': '0',
+                        'data': [],
+                        'message': f'添加时查询失败：{error_msg}'
+                    }
+                    
+                    self.add_to_summary(pending_data, company_name)
+                    self.manual_tracking_input.clear()
+                    self.load_summary_data()
+                    
+                    self.status_bar.showMessage(f"✅ {tracking_num} 已强制添加到汇总（待查询）", 5000)
+                    return
+                else:
+                    self.status_bar.showMessage(f"🚫 已取消添加 {tracking_num}", 3000)
+            else:
+                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
             
     def add_to_summary(self, data: dict, company_name: str = None):
         """添加到汇总表"""
@@ -8649,7 +9477,7 @@ class ExpressQueryProGUI(QMainWindow):
             )
             
         # 记录时效数据（如果是已签收或已到驿站）
-        if self.delivery_estimator:
+        if self.delivery_estimator and track_list:
             context = latest_context
             should_record = False
             
@@ -8676,7 +9504,7 @@ class ExpressQueryProGUI(QMainWindow):
             if should_record:
                 self.delivery_estimator.record_delivery(data)
                 
-        # 记录节点运输时间
+        # 记录节点运输时间（只要有轨迹就记录）
         if self.node_analyzer and track_list:
             self.node_analyzer.record_node_transit(data)
         
@@ -8750,7 +9578,7 @@ class ExpressQueryProGUI(QMainWindow):
     def refresh_category(self, category_key: str):
         """刷新分类下所有快递 - 添加进度条"""
         if not self.customer or not self.key:
-            QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
+            self.status_bar.showMessage("⚠️ 未配置API账号，请先在设置中添加账号", 3000)
             return
             
         if category_key not in self.category_widgets:
@@ -8760,7 +9588,7 @@ class ExpressQueryProGUI(QMainWindow):
         items = category_widget.express_items
         
         if not items:
-            QMessageBox.information(self, "提示", "该分类下没有快递需要刷新")
+            self.status_bar.showMessage("✅ 该分类下没有快递需要刷新", 3000)
             return
         
         # 检查当前账号是否可用
@@ -8773,7 +9601,7 @@ class ExpressQueryProGUI(QMainWindow):
                     usage_info = self.api_account_manager.get_usage_info()
                     self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
                 else:
-                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    self.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
                     return
             
         tracking_list = []
@@ -8797,7 +9625,7 @@ class ExpressQueryProGUI(QMainWindow):
     def refresh_all_express(self):
         """刷新所有快递 - 添加进度条"""
         if not self.customer or not self.key:
-            QMessageBox.warning(self, "提示", "未配置API账号，请先在设置中添加账号")
+            self.status_bar.showMessage("⚠️ 未配置API账号，请先在设置中添加账号", 3000)
             return
         
         # 检查当前账号是否可用
@@ -8810,7 +9638,7 @@ class ExpressQueryProGUI(QMainWindow):
                     usage_info = self.api_account_manager.get_usage_info()
                     self.status_bar.showMessage(f"已自动切换到备用账号，剩余次数：{usage_info['remaining']}", 3000)
                 else:
-                    QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                    self.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
                     return
             
         tracking_list = []
@@ -8822,7 +9650,7 @@ class ExpressQueryProGUI(QMainWindow):
                 })
                 
         if not tracking_list:
-            QMessageBox.information(self, "提示", "没有快递需要刷新")
+            self.status_bar.showMessage("✅ 没有快递需要刷新", 3000)
             return
             
         # 显示进度条（确定进度模式）
@@ -8848,7 +9676,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.status_bar.showMessage(message)
         
     def on_batch_refresh_finished(self, success_results: list, failed_items: list):
-        """批量刷新完成 - 隐藏进度条"""
+        """批量刷新完成"""
         self.global_progress.setVisible(False)
         if hasattr(self, 'toolbar_progress'):
             self.toolbar_progress.setVisible(False)
@@ -8856,21 +9684,17 @@ class ExpressQueryProGUI(QMainWindow):
         success_count = len(success_results)
         fail_count = len(failed_items)
         
-        # 处理成功的结果
         for result in success_results:
             if result.get('success'):
                 self.update_express_summary(result['data'])
         
-        # 如果有失败的单号，尝试切换账号重试
         if failed_items and self.api_account_manager:
             if DEBUG_MODE:
                 print(f"[批量刷新] 有 {fail_count} 个单号刷新失败，尝试切换账号...")
             
-            # 记录当前账号
             old_account = self.api_account_manager.current_account
             old_account_id = old_account.get('id') if old_account else None
             
-            # 尝试切换到下一个账号（强制切换）
             if self.api_account_manager.switch_to_next_account(force_switch=True):
                 new_account = self.api_account_manager.current_account
                 new_account_id = new_account.get('id') if new_account else None
@@ -8886,7 +9710,7 @@ class ExpressQueryProGUI(QMainWindow):
                     
                     self.update_api_account_display()
                     
-                    # 询问是否重试失败的单号
+                    # 需要用户选择是否重试，保留弹窗
                     reply = QMessageBox.question(
                         self, "刷新完成",
                         f"成功刷新 {success_count} 个快递，{fail_count} 个刷新失败。\n\n"
@@ -8895,7 +9719,6 @@ class ExpressQueryProGUI(QMainWindow):
                     )
                     
                     if reply == QMessageBox.Yes:
-                        # 使用新账号重试失败的单号
                         self.retry_failed_refresh(failed_items)
                         return
                     else:
@@ -8909,7 +9732,7 @@ class ExpressQueryProGUI(QMainWindow):
                     print("[批量刷新] switch_to_next_account 返回 False")
                 self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（无备用账号可切换）", 5000)
         else:
-            self.status_bar.showMessage(f"刷新完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
+            self.status_bar.showMessage(f"✅ 刷新完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
         
         self.load_summary_data()
 
@@ -8941,24 +9764,18 @@ class ExpressQueryProGUI(QMainWindow):
         success_count = len(success_results)
         fail_count = len(failed_items)
         
-        # 处理成功的结果
         for result in success_results:
             if result.get('success'):
                 self.update_express_summary(result['data'])
-                # 增加使用次数
                 if self.api_account_manager:
                     self.api_account_manager.increment_usage()
         
         self.update_api_account_display()
         
         if fail_count == 0:
-            self.status_bar.showMessage(f"重试成功！所有单号已刷新", 5000)
-            QMessageBox.information(self, "重试完成", f"所有失败的单号都已成功刷新！")
+            self.status_bar.showMessage(f"✅ 重试成功！所有单号已刷新", 5000)
         else:
-            self.status_bar.showMessage(f"重试完成：成功 {success_count}，仍有 {fail_count} 个失败", 5000)
-            QMessageBox.warning(self, "重试完成", 
-                f"成功刷新 {success_count} 个单号\n"
-                f"仍有 {fail_count} 个单号刷新失败，可能是单号无效或API问题。")
+            self.status_bar.showMessage(f"⚠️ 重试完成：成功 {success_count}，仍有 {fail_count} 个失败", 5000)
         
         self.load_summary_data()
         
@@ -9038,10 +9855,10 @@ class ExpressQueryProGUI(QMainWindow):
                             data.get('last_update', '')
                         ])
                         
-            QMessageBox.information(self, "成功", f"已导出到: {file_path}")
+            self.status_bar.showMessage(f"✅ 已导出到: {file_path}", 5000)
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出失败: {e}")
-            
+            self.status_bar.showMessage(f"❌ 导出失败: {e}", 5000)
+
     def get_company_name(self, code: str) -> str:
         """根据代码获取公司名称"""
         for name, c in self.company_codes.items():
@@ -9053,7 +9870,7 @@ class ExpressQueryProGUI(QMainWindow):
         """查询快递"""
         tracking_num = self.tracking_num.text().strip()
         if not tracking_num:
-            QMessageBox.warning(self, "提示", "请输入快递单号！")
+            self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
             return
             
         if not self.customer or not self.key:
@@ -9093,9 +9910,9 @@ class ExpressQueryProGUI(QMainWindow):
         if self.api_account_manager and not self.api_account_manager.is_current_account_available():
             if self.api_account_manager.switch_to_next_account(force_switch=False):
                 self.load_current_api_account()
-                QMessageBox.information(self, "提示", "当前账号额度已用完，已自动切换到备用账号")
+                self.status_bar.showMessage("✅ 当前账号额度已用完，已自动切换到备用账号", 3000)
             else:
-                QMessageBox.warning(self, "提示", "所有账号今日额度都已用完，请明天再试")
+                self.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
                 return
             
         self.clear_results()
@@ -9139,20 +9956,27 @@ class ExpressQueryProGUI(QMainWindow):
             
             if is_pending:
                 self.status_label.setText("查询成功！快递单号有效，等待揽件中...")
-                self.status_bar.showMessage("单号有效，等待揽件", 3000)
+                self.status_bar.showMessage("✅ 单号有效，等待揽件", 5000)
             else:
                 self.status_label.setText("查询成功！")
-                self.status_bar.showMessage("查询成功", 3000)
+                self.status_bar.showMessage("✅ 查询成功", 3000)
             
             self.save_query_to_history(data, result.get('quota_info', {}))
             self.add_to_summary(data)
             self.load_summary_data()
             
+            # 询问是否查看汇总（需要用户选择，保留弹窗）
             if is_pending:
-                QMessageBox.information(self, "添加成功", 
-                    "快递单号有效，已添加到汇总。\n\n"
-                    "当前状态：等待揽件\n"
-                    "温馨提示：有物流更新后，可在汇总页面点击\"刷新\"按钮更新状态。")
+                reply = QMessageBox.question(
+                    self, "添加成功",
+                    f"快递单号有效，已添加到汇总。\n\n"
+                    f"当前状态：等待揽件\n"
+                    f"温馨提示：有物流更新后，可在汇总页面点击\"刷新\"按钮更新状态。\n\n"
+                    f"是否切换到汇总标签查看？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    self.main_tab_widget.setCurrentIndex(0)
             else:
                 reply = QMessageBox.question(
                     self, "添加成功",
@@ -9162,29 +9986,89 @@ class ExpressQueryProGUI(QMainWindow):
                 if reply == QMessageBox.Yes:
                     self.main_tab_widget.setCurrentIndex(0)
         else:
-            # 查询失败，尝试切换账号重试
             error_msg = result.get('error', '未知错误')
+            tracking_num = self.tracking_num.text().strip()
+            company_name = self.company_combo.currentText()
+            company_code = self.company_codes.get(company_name, "")
             
             if DEBUG_MODE:
                 print(f"[查询失败]: {error_msg}")
             
+            self.status_label.setText(f"查询失败：{error_msg}")
+            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+            
+            allow_add_keywords = ['没该功能权限', '权限', '单号不存在', '暂无轨迹', '暂无物流信息', '未揽件', '无物流']
+            should_offer_add = any(keyword in error_msg for keyword in allow_add_keywords)
+            
+            if should_offer_add:
+                # 需要用户选择，保留弹窗
+                reply = QMessageBox.question(
+                    self, "查询失败",
+                    f"API查询失败：{error_msg}\n\n"
+                    f"快递单号：{tracking_num}\n"
+                    f"快递公司：{company_name}\n\n"
+                    f"可能是单号有效但API暂时无法查询（如权限不足或未揽件）。\n\n"
+                    f"是否仍然将此单号添加到快递汇总？\n"
+                    f"（添加后可以稍后刷新获取物流信息）",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    pending_data = {
+                        'nu': tracking_num,
+                        'com': company_code,
+                        'state': '0',
+                        'data': [],
+                        'message': f'添加时查询失败：{error_msg}'
+                    }
+                    
+                    self.add_to_summary(pending_data, company_name)
+                    self.load_summary_data()
+                    
+                    if self.user_manager.current_user_db:
+                        self.user_manager.save_query_history(
+                            tracking_num,
+                            company_code,
+                            company_name,
+                            '待查询',
+                            json.dumps(pending_data, ensure_ascii=False),
+                            result.get('quota_info', {}).get('remaining', 0)
+                        )
+                    
+                    self.status_label.setText(f"已添加到汇总（等待刷新）")
+                    self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总", 5000)
+                    
+                    self.clear_results()
+                    
+                    # 询问是否查看汇总
+                    view_reply = QMessageBox.question(
+                        self, "添加成功",
+                        f"快递单号 {tracking_num} 已添加到汇总。\n\n"
+                        f"当前状态：待查询/待揽件\n"
+                        f"温馨提示：稍后可在汇总页面点击\"刷新\"按钮更新状态。\n\n"
+                        f"是否切换到汇总标签查看？",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if view_reply == QMessageBox.Yes:
+                        self.main_tab_widget.setCurrentIndex(0)
+                    
+                    return
+                else:
+                    self.status_bar.showMessage(f"🚫 已取消添加 {tracking_num}", 3000)
+                    return
+            
+            # 切换账号重试（需要用户选择，保留弹窗）
             if self.api_account_manager:
-                # 增加当前账号的使用次数
                 self.api_account_manager.increment_usage()
                 
-                # 记录当前账号
                 old_account = self.api_account_manager.current_account
                 old_account_id = old_account.get('id') if old_account else None
                 old_account_name = old_account.get('account_name', '未知') if old_account else '无'
                 
                 if DEBUG_MODE:
                     print(f"[查询失败] 当前账号: {old_account_name}, 尝试切换...")
-                    accounts = self.api_account_manager.get_accounts()
-                    print(f"[查询失败] 共有 {len(accounts)} 个账号")
-                    for i, acc in enumerate(accounts):
-                        print(f"[查询失败]   账号{i+1}: {acc.get('account_name', '未知')} ({acc.get('used_today', 0)}/{acc.get('daily_limit', 100)})")
                 
-                # 尝试切换到下一个账号（强制切换）
                 if self.api_account_manager.switch_to_next_account(force_switch=True):
                     new_account = self.api_account_manager.current_account
                     new_account_id = new_account.get('id') if new_account else None
@@ -9196,16 +10080,13 @@ class ExpressQueryProGUI(QMainWindow):
                         
                         if not self.load_current_api_account():
                             self.status_label.setText(f"查询失败：{error_msg}（切换账号失败）")
-                            self.status_bar.showMessage(f"查询失败：{error_msg}（切换账号失败）", 5000)
-                            QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n切换账号失败，请检查账号配置。")
+                            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（切换账号失败）", 5000)
                             return
-                        
-                        if DEBUG_MODE:
-                            print(f"[账号切换后] customer: {self.customer[:10] if self.customer else 'empty'}, key: {self.key[:10] if self.key else 'empty'}")
                         
                         self.update_api_account_display()
                         usage_info = self.api_account_manager.get_usage_info()
                         
+                        # 需要用户选择是否重试
                         reply = QMessageBox.question(
                             self, "自动切换账号",
                             f"查询失败：{error_msg}\n\n"
@@ -9220,25 +10101,16 @@ class ExpressQueryProGUI(QMainWindow):
                             return
                         else:
                             self.status_label.setText(f"查询失败：{error_msg}（已切换账号）")
-                            self.status_bar.showMessage(f"查询失败：{error_msg}（已切换账号）", 5000)
+                            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（已切换账号）", 5000)
                     else:
-                        if DEBUG_MODE:
-                            print(f"[查询失败] 切换后账号未变化: {new_account_name}")
                         self.status_label.setText(f"查询失败：{error_msg}（无可用备用账号）")
-                        self.status_bar.showMessage(f"查询失败：{error_msg}（无可用备用账号）", 5000)
-                        QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n没有可用的备用账号。")
+                        self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（无可用备用账号）", 5000)
                 else:
-                    if DEBUG_MODE:
-                        print("[查询失败] switch_to_next_account 返回 False")
                     self.status_label.setText(f"查询失败：{error_msg}（无备用账号）")
-                    self.status_bar.showMessage(f"查询失败：{error_msg}（无备用账号）", 5000)
-                    QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}\n\n请添加备用API账号。")
+                    self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（无备用账号）", 5000)
             else:
-                if DEBUG_MODE:
-                    print("[查询失败] api_account_manager 为 None")
                 self.status_label.setText(f"查询失败：{error_msg}")
-                self.status_bar.showMessage(f"查询失败：{error_msg}", 5000)
-                QMessageBox.critical(self, "查询失败", f"错误信息：{error_msg}")
+                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
             
     def save_query_to_history(self, data: dict, quota_info: dict):
         """保存查询到历史"""
@@ -9488,7 +10360,7 @@ class ExpressQueryProGUI(QMainWindow):
                 self.process_result(data)
                 self.tracking_num.setText(record['tracking_number'])
             except:
-                QMessageBox.warning(self, "错误", "无法解析历史数据")
+                self.status_bar.showMessage("⚠️ 无法解析历史数据", 3000)
                 
     def requery_from_history(self, tracking_num: str, company_code: str):
         """从历史记录重新查询"""
@@ -9505,7 +10377,7 @@ class ExpressQueryProGUI(QMainWindow):
     def export_history(self):
         """导出历史记录"""
         if self.history_table.rowCount() == 0:
-            QMessageBox.information(self, "提示", "没有可导出的数据")
+            self.status_bar.showMessage("⚠️ 没有可导出的数据", 3000)
             return
             
         file_path, _ = QFileDialog.getSaveFileName(
@@ -9531,12 +10403,13 @@ class ExpressQueryProGUI(QMainWindow):
                             row_data.append(item.text() if item else "")
                         writer.writerow(row_data)
                         
-            QMessageBox.information(self, "成功", f"已导出到: {file_path}")
+            self.status_bar.showMessage(f"✅ 已导出到: {file_path}", 5000)
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出失败: {e}")
+            self.status_bar.showMessage(f"❌ 导出失败: {e}", 5000)
             
     def clear_history(self):
         """清空历史记录"""
+        # 清空操作需要确认，保留弹窗
         reply = QMessageBox.question(
             self, "确认清空",
             "确定要清空所有查询历史吗？此操作不可恢复！",
@@ -9548,18 +10421,151 @@ class ExpressQueryProGUI(QMainWindow):
                 sql = "DELETE FROM express_query_history"
                 if self.user_manager.current_user_db.execute_update(sql):
                     self.load_history()
-                    QMessageBox.information(self, "成功", "历史记录已清空")
+                    self.status_bar.showMessage("✅ 历史记录已清空", 3000)
                     
     def on_global_search(self):
-        """全局搜索"""
+        """全局搜索 - 按回车时弹出选择对话框"""
         search_text = self.global_search.text().strip()
         if not search_text:
+            self.clear_summary_filter()
             return
-            
-        self.main_tab_widget.setCurrentIndex(2)
-        self.history_search.setText(search_text)
-        self.search_history()
         
+        # 弹出选择对话框前，可以先不清除过滤
+        # 让用户决定搜索范围
+        
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("全局搜索")
+        msg_box.setText(f"搜索关键词: \"{search_text}\"\n\n请选择操作：")
+        
+        summary_btn = msg_box.addButton("📦 查看汇总过滤结果", QMessageBox.YesRole)
+        history_btn = msg_box.addButton("📋 搜索查询历史", QMessageBox.NoRole)
+        both_btn = msg_box.addButton("🔍 两者都搜索", QMessageBox.AcceptRole)
+        clear_btn = msg_box.addButton("🔄 清除过滤", QMessageBox.ResetRole)
+        cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
+        
+        msg_box.exec()
+        
+        clicked_btn = msg_box.clickedButton()
+        
+        if clicked_btn == cancel_btn:
+            return
+        elif clicked_btn == clear_btn:
+            self.clear_global_search()
+            return
+        elif clicked_btn == summary_btn:
+            # 已经在过滤状态，不需要额外操作
+            self.main_tab_widget.setCurrentIndex(0)
+            self.status_bar.showMessage(f"当前显示 \"{search_text}\" 的过滤结果", 3000)
+        elif clicked_btn == history_btn:
+            # 清除汇总过滤，搜索历史
+            self.clear_summary_filter()
+            self.main_tab_widget.setCurrentIndex(2)
+            self.history_search.setText(search_text)
+            self.search_history()
+            self.status_bar.showMessage(f"已切换到查询历史搜索 \"{search_text}\"", 3000)
+        elif clicked_btn == both_btn:
+            # 保持汇总过滤，同时搜索历史
+            self.main_tab_widget.setCurrentIndex(2)
+            self.history_search.setText(search_text)
+            self.search_history()
+            self.status_bar.showMessage(f"汇总已过滤，历史已搜索 \"{search_text}\"", 5000)
+
+
+
+    def search_in_summary(self, search_text: str):
+        """在快递汇总中搜索并高亮匹配的条目"""
+        search_lower = search_text.lower()
+        match_count = 0
+        first_match_item = None  # 记录第一个匹配的条目
+        
+        # 先清除之前的高亮
+        self.clear_summary_search_highlight()
+        
+        # 遍历所有分类和条目
+        for category_key, widget in self.category_widgets.items():
+            category_has_match = False
+            
+            for item in widget.express_items:
+                data = item.express_data
+                tracking_num = (data.get('tracking_number') or '').lower()
+                company_name = (data.get('company_name') or '').lower()
+                status = (data.get('status') or '').lower()
+                remark = (data.get('remark') or '').lower()
+                latest_track = (data.get('latest_track') or '').lower()
+                
+                # 检查是否匹配
+                is_match = (search_lower in tracking_num or 
+                        search_lower in company_name or 
+                        search_lower in status or 
+                        search_lower in remark or 
+                        search_lower in latest_track)
+                
+                if is_match:
+                    match_count += 1
+                    print(f"[搜索高亮] 匹配到单号: {tracking_num}")  # 调试信息
+                    category_has_match = True
+                    # 高亮显示匹配的条目
+                    item.setProperty("search_match", True)
+                    item.apply_search_highlight(True)
+                    
+                    # 记录第一个匹配的条目
+                    if first_match_item is None:
+                        first_match_item = (widget, item)
+            
+            # 如果分类中有匹配项，自动展开该分类
+            if category_has_match and widget.is_collapsed:
+                widget.set_collapsed(False)
+        
+        # 切换到快递汇总标签页
+        self.main_tab_widget.setCurrentIndex(0)
+        
+        if match_count > 0:
+            self.status_bar.showMessage(f"在快递汇总中找到 {match_count} 条匹配结果", 5000)
+            
+            # 滚动到第一个匹配的条目
+            if first_match_item:
+                widget, item = first_match_item
+                # 使用 QTimer 延迟执行，确保 UI 已更新
+                QTimer.singleShot(100, lambda: self.scroll_to_item(widget, item))
+        else:
+            self.status_bar.showMessage(f"在快递汇总中未找到 \"{search_text}\" 的匹配结果", 3000)
+            QMessageBox.information(self, "搜索完成", 
+                f"在快递汇总中未找到 \"{search_text}\" 的匹配结果。\n\n"
+                f"您可以尝试：\n"
+                f"• 检查关键词拼写\n"
+                f"• 使用更简短的词搜索\n"
+                f"• 在\"查询历史\"中搜索")
+
+
+    def clear_summary_search_highlight(self):
+        """清除快递汇总中的搜索高亮"""
+        for category_key, widget in self.category_widgets.items():
+            for item in widget.express_items:
+                item.setProperty("search_match", False)
+                item.apply_search_highlight(False)
+
+    def save_original_items(self):
+        """保存过滤前的原始条目状态"""
+        self.original_items_visibility = {}
+        for category_key, widget in self.category_widgets.items():
+            visibility_list = []
+            for item in widget.express_items:
+                visibility_list.append(item.isVisible())
+            self.original_items_visibility[category_key] = visibility_list
+
+
+
+    def restore_original_visibility(self):
+        """恢复原始的可见性状态（如果有保存的话）"""
+        if hasattr(self, 'original_items_visibility'):
+            for category_key, widget in self.category_widgets.items():
+                if category_key in self.original_items_visibility:
+                    visibility_list = self.original_items_visibility[category_key]
+                    for i, item in enumerate(widget.express_items):
+                        if i < len(visibility_list):
+                            item.setVisible(visibility_list[i])
+            self.is_filtered = False
+
     def refresh_database_info(self):
         """刷新数据库信息"""
         if not self.user_manager.current_user_db:
@@ -9601,7 +10607,7 @@ class ExpressQueryProGUI(QMainWindow):
                 self.user_manager.current_user_db.vacuum()
                 self.global_progress.setVisible(False)
                 self.refresh_database_info()
-                QMessageBox.information(self, "成功", "数据库优化完成")
+                self.status_bar.showMessage("✅ 数据库优化完成", 3000)
                 
             QTimer.singleShot(100, optimize)
             
@@ -9629,7 +10635,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.load_history()
         self.load_summary_data()
         
-        QMessageBox.information(self, "成功", "数据库已重新初始化")
+        self.status_bar.showMessage("✅ 数据库已重新初始化", 3000)
         
     def auto_backup(self):
         """自动备份"""
@@ -9912,7 +10918,7 @@ class ExpressQueryProGUI(QMainWindow):
     def rebuild_delivery_history(self):
         """重建时效历史数据 - 从现有快递数据中解析揽收和签收时间"""
         if not self.user_manager.current_user_db:
-            QMessageBox.warning(self, "提示", "数据库未连接")
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
             return
         
         # 确认对话框
@@ -9954,7 +10960,7 @@ class ExpressQueryProGUI(QMainWindow):
     def rebuild_node_history(self):
         """重建节点运输历史数据 - 从现有快递数据中解析物流节点"""
         if not self.user_manager.current_user_db:
-            QMessageBox.warning(self, "提示", "数据库未连接")
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
             return
         
         # 确认对话框
@@ -9996,7 +11002,7 @@ class ExpressQueryProGUI(QMainWindow):
     def rebuild_all_history(self):
         """全部重建（时效+节点）"""
         if not self.user_manager.current_user_db:
-            QMessageBox.warning(self, "提示", "数据库未连接")
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
             return
         
         reply = QMessageBox.question(
@@ -10099,7 +11105,7 @@ class ExpressQueryProGUI(QMainWindow):
                     })
         
         if not all_numbers:
-            QMessageBox.information(self, "提示", "没有可导出的快递单号")
+            self.status_bar.showMessage("✅ 没有可导出的快递单号", 3000)
             return
         
         # 弹出选择对话框
@@ -10111,7 +11117,7 @@ class ExpressQueryProGUI(QMainWindow):
         export_format = dialog.get_export_format()
         
         if not selected_numbers:
-            QMessageBox.information(self, "提示", "未选择任何快递单号")
+            self.status_bar.showMessage("✅ 未选择任何快递单号", 3000)
             return
         
         # 根据格式导出
@@ -10124,7 +11130,7 @@ class ExpressQueryProGUI(QMainWindow):
 
 
     def export_numbers_as_txt(self, numbers: List[Dict]):
-        """导出为纯文本格式（每行一个单号）"""
+        """导出为纯文本格式"""
         file_path, _ = QFileDialog.getSaveFileName(
             self, "导出快递单号", 
             f"express_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
@@ -10139,14 +11145,12 @@ class ExpressQueryProGUI(QMainWindow):
                 for item in numbers:
                     f.write(f"{item['number']}\n")
             
-            QMessageBox.information(self, "导出成功", 
-                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+            self.status_bar.showMessage(f"✅ 已导出 {len(numbers)} 个快递单号", 3000)
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
-
-
+            self.status_bar.showMessage(f"❌ 导出失败：{str(e)}", 3000)
+    
     def export_numbers_as_csv(self, numbers: List[Dict]):
-        """导出为CSV格式（包含详细信息）"""
+        """导出为CSV格式"""
         file_path, _ = QFileDialog.getSaveFileName(
             self, "导出快递单号", 
             f"express_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
@@ -10171,12 +11175,10 @@ class ExpressQueryProGUI(QMainWindow):
                         item['category']
                     ])
             
-            QMessageBox.information(self, "导出成功", 
-                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+            self.status_bar.showMessage(f"✅ 已导出 {len(numbers)} 个快递单号", 3000)
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
-
-
+            self.status_bar.showMessage(f"❌ 导出失败：{str(e)}", 3000)
+    
     def export_numbers_as_json(self, numbers: List[Dict]):
         """导出为JSON格式"""
         file_path, _ = QFileDialog.getSaveFileName(
@@ -10198,13 +11200,80 @@ class ExpressQueryProGUI(QMainWindow):
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(export_data, f, ensure_ascii=False, indent=2)
             
-            QMessageBox.information(self, "导出成功", 
-                f"已成功导出 {len(numbers)} 个快递单号到：\n{file_path}")
+            self.status_bar.showMessage(f"✅ 已导出 {len(numbers)} 个快递单号", 3000)
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出时发生错误：{str(e)}")
+            self.status_bar.showMessage(f"❌ 导出失败：{str(e)}", 3000)
+
+    def clear_global_search(self):
+        """清空全局搜索框并恢复显示"""
+        self.global_search.clear()
+        self.clear_summary_filter()
+        self.status_bar.showMessage("已清除搜索", 2000)
+
+    def scroll_to_item(self, category_widget, item_widget):
+        """滚动到指定的快递条目"""
+        # 获取快递汇总标签页中的滚动区域
+        scroll_area = self.summary_tab.findChild(QScrollArea)
+        if not scroll_area:
+            print("[调试] 未找到 QScrollArea")
+            return
+        
+        # 获取滚动区域内部的 widget
+        scroll_content = scroll_area.widget()
+        if not scroll_content:
+            print("[调试] 未找到 scroll_content")
+            return
+        
+        # 确保 item_widget 是可见的
+        if not item_widget.isVisible():
+            print("[调试] item_widget 不可见")
+        
+        # 计算 item_widget 相对于 scroll_content 的位置
+        item_pos = item_widget.mapTo(scroll_content, item_widget.rect().topLeft())
+        
+        print(f"[调试] item_pos.y() = {item_pos.y()}")
+        print(f"[调试] scroll_area.height() = {scroll_area.height()}")
+        print(f"[调试] current_value = {scroll_area.verticalScrollBar().value()}")
+        print(f"[调试] maximum = {scroll_area.verticalScrollBar().maximum()}")
+        
+        # 获取当前滚动条位置
+        current_value = scroll_area.verticalScrollBar().value()
+        
+        # 计算目标滚动位置
+        target_value = item_pos.y() - scroll_area.height() // 3
+        target_value = max(0, min(target_value, scroll_area.verticalScrollBar().maximum()))
+        
+        print(f"[调试] target_value = {target_value}")
+        
+        if target_value == current_value:
+            print("[调试] 目标位置与当前位置相同，无需滚动")
+            return
+        
+        # 动画滚动效果
+        self.animate_scroll(scroll_area.verticalScrollBar(), current_value, target_value)
+
+    def animate_scroll(self, scroll_bar, start_value, end_value, duration=300):
+        """动画滚动效果"""
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        
+        animation = QPropertyAnimation(scroll_bar, b"value")
+        animation.setDuration(duration)
+        animation.setStartValue(start_value)
+        animation.setEndValue(end_value)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        animation.start()
+        
+        # 保存动画引用，防止被垃圾回收
+        if not hasattr(self, '_scroll_animations'):
+            self._scroll_animations = []
+        
+        # 清理已完成的动画
+        self._scroll_animations = [a for a in self._scroll_animations if a.state() == QPropertyAnimation.Running]
+        self._scroll_animations.append(animation)
+
 
 class SettingsDialogPro(QDialog):
-    """设置对话框"""
+    """设置对话框 - 多标签页版本"""
     
     def __init__(self, parent: ExpressQueryProGUI):
         super().__init__(parent)
@@ -10213,32 +11282,135 @@ class SettingsDialogPro(QDialog):
         self.setStyleSheet(MacaronStyle.get_main_style())
         
     def init_ui(self):
-        """初始化UI"""
+        """初始化UI - 多标签页版本"""
         self.setWindowTitle("系统设置")
-        self.setMinimumSize(500, 550)
+        self.setMinimumSize(600, 600)
         
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        # 创建标签页控件
+        self.tab_widget = QTabWidget()
+        
+        # ========== 标签页1：API账号管理 ==========
+        self.account_tab = QWidget()
+        self.setup_account_tab()
+        self.tab_widget.addTab(self.account_tab, "🔑 API账号")
+        
+        # ========== 标签页2：数据管理 ==========
+        self.data_tab = QWidget()
+        self.setup_data_tab()
+        self.tab_widget.addTab(self.data_tab, "📊 数据管理")
+        
+        # ========== 标签页3：备份设置 ==========
+        self.backup_tab = QWidget()
+        self.setup_backup_tab()
+        self.tab_widget.addTab(self.backup_tab, "💾 备份设置")
+        
+        # ========== 标签页4：高级设置 ==========
+        self.advanced_tab = QWidget()
+        self.setup_advanced_tab()
+        self.tab_widget.addTab(self.advanced_tab, "⚙️ 高级")
+        
+        layout.addWidget(self.tab_widget)
+        
+        # 底部按钮
+        btn_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("保存设置")
+        save_btn.clicked.connect(self.save_settings)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        btn_layout.addWidget(save_btn)
+        
+        btn_layout.addStretch()
+        
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        # 加载各标签页的数据
+        self.load_all_stats()
+        
+    def setup_account_tab(self):
+        """设置API账号管理标签页"""
+        layout = QVBoxLayout(self.account_tab)
         layout.setSpacing(15)
         
-        # API账号管理
-        account_group = QGroupBox("API账号管理")
-        account_layout = QVBoxLayout()
+        # 说明信息
+        info_label = QLabel("管理多个API账号，支持额度用完自动切换")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; padding: 5px;")
+        layout.addWidget(info_label)
         
-        account_info_label = QLabel("管理多个API账号，支持额度用完自动切换")
-        account_layout.addWidget(account_info_label)
+        # 当前账号信息
+        current_group = QGroupBox("当前使用账号")
+        current_layout = QVBoxLayout()
+        
+        self.current_account_label = QLabel("加载中...")
+        self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px;")
+        current_layout.addWidget(self.current_account_label)
+        
+        current_group.setLayout(current_layout)
+        layout.addWidget(current_group)
+        
+        # 管理按钮
+        manage_layout = QHBoxLayout()
         
         manage_account_btn = QPushButton("管理API账号")
+        manage_account_btn.setToolTip("添加、编辑、删除API账号，设置自动切换")
         manage_account_btn.clicked.connect(self.manage_accounts)
-        account_layout.addWidget(manage_account_btn)
+        manage_account_btn.setMinimumHeight(40)
+        manage_account_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.BLUE_LAVENDER.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.BLUE_SKY.name()};
+            }}
+        """)
+        manage_layout.addWidget(manage_account_btn)
         
-        account_group.setLayout(account_layout)
-        layout.addWidget(account_group)
+        layout.addLayout(manage_layout)
+        
+        # 快速操作
+        quick_group = QGroupBox("快速操作")
+        quick_layout = QVBoxLayout()
+        
+        refresh_account_btn = QPushButton("🔄 刷新账号信息")
+        refresh_account_btn.setToolTip("刷新API账号的使用情况和配额信息")
+        refresh_account_btn.clicked.connect(self.refresh_account_info)
+        quick_layout.addWidget(refresh_account_btn)
+        
+        quick_group.setLayout(quick_layout)
+        layout.addWidget(quick_group)
+        
+        layout.addStretch()
+        
+    def setup_data_tab(self):
+        """设置数据管理标签页"""
+        layout = QVBoxLayout(self.data_tab)
+        layout.setSpacing(15)
         
         # 时效数据管理
         delivery_group = QGroupBox("时效数据管理")
         delivery_layout = QVBoxLayout()
         
         delivery_info_label = QLabel("基于历史签收数据预估送达时间")
+        delivery_info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
         delivery_layout.addWidget(delivery_info_label)
         
         stats_layout = QHBoxLayout()
@@ -10247,18 +11419,32 @@ class SettingsDialogPro(QDialog):
         stats_layout.addStretch()
         delivery_layout.addLayout(stats_layout)
         
+        btn_layout1 = QHBoxLayout()
+        
         clear_history_btn = QPushButton("清空时效历史数据")
+        clear_history_btn.setToolTip("清空所有已记录的时效数据，清空后预估功能将使用默认值")
         clear_history_btn.clicked.connect(self.clear_delivery_history)
-        delivery_layout.addWidget(clear_history_btn)
+        clear_history_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.ORANGE_PEACH.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.ORANGE_APRICOT.name()};
+            }}
+        """)
+        btn_layout1.addWidget(clear_history_btn)
+        btn_layout1.addStretch()
+        delivery_layout.addLayout(btn_layout1)
         
         delivery_group.setLayout(delivery_layout)
         layout.addWidget(delivery_group)
         
-        # 节点历史数据管理（新增）
+        # 节点历史数据管理
         node_group = QGroupBox("节点运输历史数据")
         node_layout = QVBoxLayout()
         
         node_info_label = QLabel("基于历史节点运输数据预估各路段耗时")
+        node_info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
         node_layout.addWidget(node_info_label)
         
         node_stats_layout = QHBoxLayout()
@@ -10267,68 +11453,213 @@ class SettingsDialogPro(QDialog):
         node_stats_layout.addStretch()
         node_layout.addLayout(node_stats_layout)
         
+        btn_layout2 = QHBoxLayout()
+        
         clear_node_btn = QPushButton("清空节点历史数据")
+        clear_node_btn.setToolTip("清空所有已记录的节点运输数据，清空后节点时间预估将使用默认值")
         clear_node_btn.clicked.connect(self.clear_node_history)
-        node_layout.addWidget(clear_node_btn)
+        clear_node_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.ORANGE_PEACH.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.ORANGE_APRICOT.name()};
+            }}
+        """)
+        btn_layout2.addWidget(clear_node_btn)
+        btn_layout2.addStretch()
+        node_layout.addLayout(btn_layout2)
         
         node_group.setLayout(node_layout)
         layout.addWidget(node_group)
         
-        # 备份设置
-        backup_group = QGroupBox("备份设置")
-        backup_layout = QVBoxLayout()
+        # 数据统计摘要
+        summary_group = QGroupBox("数据统计摘要")
+        summary_layout = QGridLayout()
+        
+        summary_layout.addWidget(QLabel("时效数据记录数:"), 0, 0)
+        self.delivery_count_label = QLabel("0")
+        self.delivery_count_label.setStyleSheet("font-weight: bold;")
+        summary_layout.addWidget(self.delivery_count_label, 0, 1)
+        
+        summary_layout.addWidget(QLabel("节点数据记录数:"), 1, 0)
+        self.node_count_label = QLabel("0")
+        self.node_count_label.setStyleSheet("font-weight: bold;")
+        summary_layout.addWidget(self.node_count_label, 1, 1)
+        
+        summary_group.setLayout(summary_layout)
+        layout.addWidget(summary_group)
+        
+        layout.addStretch()
+        
+    def setup_backup_tab(self):
+        """设置备份设置标签页"""
+        layout = QVBoxLayout(self.backup_tab)
+        layout.setSpacing(15)
+        
+        # 备份保留设置
+        retention_group = QGroupBox("备份保留设置")
+        retention_layout = QVBoxLayout()
         
         max_layout = QHBoxLayout()
         max_layout.addWidget(QLabel("最大备份数量:"))
         self.max_backups_spin = QSpinBox()
         self.max_backups_spin.setRange(1, 100)
         self.max_backups_spin.setValue(self.parent.backup_manager.max_backups)
+        self.max_backups_spin.setSuffix(" 个")
+        self.max_backups_spin.setToolTip("超过此数量的旧备份将自动删除")
         max_layout.addWidget(self.max_backups_spin)
         max_layout.addStretch()
-        backup_layout.addLayout(max_layout)
+        retention_layout.addLayout(max_layout)
+        
+        info_label = QLabel("说明: 超过最大数量的旧备份将自动删除")
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px;")
+        retention_layout.addWidget(info_label)
+        
+        retention_group.setLayout(retention_layout)
+        layout.addWidget(retention_group)
+        
+        # 自动备份设置
+        auto_group = QGroupBox("自动备份")
+        auto_layout = QVBoxLayout()
         
         self.auto_backup_check = QCheckBox("启用自动备份（每小时）")
         self.auto_backup_check.setChecked(self.parent.backup_timer.isActive())
-        backup_layout.addWidget(self.auto_backup_check)
+        self.auto_backup_check.setToolTip("每小时自动创建一次数据库备份")
+        auto_layout.addWidget(self.auto_backup_check)
+        
+        auto_group.setLayout(auto_layout)
+        layout.addWidget(auto_group)
+        
+        # 备份存储位置
+        location_group = QGroupBox("备份存储位置")
+        location_layout = QVBoxLayout()
         
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(QLabel("备份目录:"))
         self.dir_label = QLabel(str(self.parent.backup_manager.backup_dir))
+        self.dir_label.setStyleSheet(f"color: {MacaronColors.TEXT_DARK.name()};")
         dir_layout.addWidget(self.dir_label)
         dir_layout.addStretch()
-        backup_layout.addLayout(dir_layout)
+        location_layout.addLayout(dir_layout)
         
-        backup_group.setLayout(backup_layout)
-        layout.addWidget(backup_group)
+        open_dir_btn = QPushButton("📁 打开备份目录")
+        open_dir_btn.clicked.connect(self.open_backup_dir)
+        location_layout.addWidget(open_dir_btn)
         
-        # 调试模式
-        debug_layout = QHBoxLayout()
-        self.debug_check = QCheckBox("启用调试模式")
-        # 修改：从父窗口的 DEBUG_MODE 全局变量读取，而不是直接读取全局变量
-        self.debug_check.setChecked(DEBUG_MODE)  # DEBUG_MODE 已经是全局变量
-        debug_layout.addWidget(self.debug_check)
-        debug_layout.addStretch()
-        layout.addLayout(debug_layout)
+        location_group.setLayout(location_layout)
+        layout.addWidget(location_group)
+        
+        # 快速操作
+        quick_group = QGroupBox("快速操作")
+        quick_layout = QHBoxLayout()
+        
+        backup_now_btn = QPushButton("💾 立即备份")
+        backup_now_btn.setToolTip("立即创建一个手动备份")
+        backup_now_btn.clicked.connect(self.create_manual_backup)
+        quick_layout.addWidget(backup_now_btn)
+        
+        manage_backup_btn = QPushButton("📋 备份管理")
+        manage_backup_btn.setToolTip("打开备份管理对话框，查看和恢复备份")
+        manage_backup_btn.clicked.connect(self.show_backup_dialog)
+        quick_layout.addWidget(manage_backup_btn)
+        
+        quick_group.setLayout(quick_layout)
+        layout.addWidget(quick_group)
         
         layout.addStretch()
         
-        btn_layout = QHBoxLayout()
+    def setup_advanced_tab(self):
+        """设置高级设置标签页"""
+        layout = QVBoxLayout(self.advanced_tab)
+        layout.setSpacing(15)
         
-        save_btn = QPushButton("保存设置")
-        save_btn.clicked.connect(self.save_settings)
-        btn_layout.addWidget(save_btn)
+        # 调试设置
+        debug_group = QGroupBox("调试设置")
+        debug_layout = QVBoxLayout()
         
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
+        self.debug_check = QCheckBox("启用调试模式")
+        self.debug_check.setChecked(DEBUG_MODE)
+        self.debug_check.setToolTip("启用后将在控制台输出详细的调试信息")
+        debug_layout.addWidget(self.debug_check)
         
-        layout.addLayout(btn_layout)
+        debug_info = QLabel("调试模式会输出详细日志，建议仅在排查问题时启用。")
+        debug_info.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px;")
+        debug_layout.addWidget(debug_info)
         
-        self.setLayout(layout)
+        debug_group.setLayout(debug_layout)
+        layout.addWidget(debug_group)
         
+        # 界面设置
+        ui_group = QGroupBox("界面设置")
+        ui_layout = QVBoxLayout()
+        
+        # 窗口重置按钮
+        reset_window_btn = QPushButton("📐 重置窗口大小")
+        reset_window_btn.setToolTip("将主窗口大小恢复为默认值")
+        reset_window_btn.clicked.connect(self.reset_main_window_size)
+        ui_layout.addWidget(reset_window_btn)
+        
+        ui_group.setLayout(ui_layout)
+        layout.addWidget(ui_group)
+        
+        # 系统信息
+        info_group = QGroupBox("系统信息")
+        info_layout = QGridLayout()
+        
+        info_layout.addWidget(QLabel("程序版本:"), 0, 0)
+        version_label = QLabel(ProjectInfo.VERSION)
+        version_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(version_label, 0, 1)
+        
+        info_layout.addWidget(QLabel("构建日期:"), 1, 0)
+        build_label = QLabel(ProjectInfo.BUILD_DATE)
+        build_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(build_label, 1, 1)
+        
+        info_layout.addWidget(QLabel("数据目录:"), 2, 0)
+        data_dir_label = QLabel(str(self.parent.app_data_dir))
+        data_dir_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 10px;")
+        data_dir_label.setWordWrap(True)
+        info_layout.addWidget(data_dir_label, 2, 1)
+        
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
+        
+        layout.addStretch()
+        
+    def load_all_stats(self):
+        """加载所有统计数据"""
         self.load_delivery_stats()
         self.load_node_stats()
+        self.update_current_account_display()
+        
+    def update_current_account_display(self):
+        """更新当前账号显示"""
+        if hasattr(self, 'current_account_label'):
+            if self.parent.api_account_manager:
+                account = self.parent.api_account_manager.get_current_account()
+                if account:
+                    account_name = account.get('account_name', '未知')
+                    used = account.get('used_today', 0)
+                    limit = account.get('daily_limit', 100)
+                    remaining = limit - used
+                    
+                    display_text = f"📋 {account_name} | 今日已用: {used}/{limit} | 剩余: {remaining}"
+                    self.current_account_label.setText(display_text)
+                    
+                    if remaining <= 0:
+                        self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px; color: red;")
+                    elif remaining <= limit * 0.2:
+                        self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px; color: orange;")
+                    else:
+                        self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px; color: green;")
+                else:
+                    self.current_account_label.setText("⚠️ 未配置API账号")
+                    self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px; color: red;")
+            else:
+                self.current_account_label.setText("⚠️ 未配置API账号")
+                self.current_account_label.setStyleSheet("font-weight: bold; padding: 5px; color: red;")
         
     def load_delivery_stats(self):
         """加载时效统计"""
@@ -10337,7 +11668,9 @@ class SettingsDialogPro(QDialog):
             result = self.parent.current_user_db.execute_query(sql)
             if result:
                 count = result[0]['count']
-                self.stats_label.setText(f"已记录 {count} 条时效数据")
+                self.stats_label.setText(f"📊 已记录 {count} 条时效数据")
+                if hasattr(self, 'delivery_count_label'):
+                    self.delivery_count_label.setText(str(count))
                 
     def load_node_stats(self):
         """加载节点统计"""
@@ -10346,10 +11679,13 @@ class SettingsDialogPro(QDialog):
             result = self.parent.current_user_db.execute_query(sql)
             if result:
                 count = result[0]['count']
-                self.node_stats_label.setText(f"已记录 {count} 条节点运输数据")
+                self.node_stats_label.setText(f"📍 已记录 {count} 条节点运输数据")
+                if hasattr(self, 'node_count_label'):
+                    self.node_count_label.setText(str(count))
                 
     def clear_delivery_history(self):
         """清空时效历史数据"""
+        # 清空操作需要确认，保留弹窗
         reply = QMessageBox.question(
             self, "确认清空",
             "确定要清空所有时效历史数据吗？\n清空后预估功能将使用默认值。",
@@ -10361,10 +11697,11 @@ class SettingsDialogPro(QDialog):
                 sql = "DELETE FROM delivery_history"
                 self.parent.current_user_db.execute_update(sql)
                 self.load_delivery_stats()
-                QMessageBox.information(self, "成功", "时效历史数据已清空")
-                
+                self.parent.status_bar.showMessage("✅ 时效历史数据已清空", 3000)
+    
     def clear_node_history(self):
         """清空节点历史数据"""
+        # 清空操作需要确认，保留弹窗
         reply = QMessageBox.question(
             self, "确认清空",
             "确定要清空所有节点运输历史数据吗？\n清空后节点时间预估将使用默认值。",
@@ -10376,7 +11713,7 @@ class SettingsDialogPro(QDialog):
                 sql = "DELETE FROM node_transit_history"
                 self.parent.current_user_db.execute_update(sql)
                 self.load_node_stats()
-                QMessageBox.information(self, "成功", "节点历史数据已清空")
+                self.parent.status_bar.showMessage("✅ 节点历史数据已清空", 3000)
         
     def manage_accounts(self):
         """管理API账号"""
@@ -10387,9 +11724,63 @@ class SettingsDialogPro(QDialog):
                     self.parent.api_account_manager.load_accounts()
                     self.parent.load_current_api_account()
                     self.parent.update_api_account_display()
+                self.update_current_account_display()
         else:
-            QMessageBox.warning(self, "提示", "数据库未连接")
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
             
+    def refresh_account_info(self):
+        """刷新账号信息"""
+        if self.parent.api_account_manager:
+            self.parent.api_account_manager.check_and_reset_daily_usage()
+            self.parent.load_current_api_account()
+            self.parent.update_api_account_display()
+            self.update_current_account_display()
+            self.parent.status_bar.showMessage("✅ 账号信息已刷新", 2000)
+            
+    def open_backup_dir(self):
+        """打开备份目录"""
+        import subprocess
+        backup_dir = str(self.parent.backup_manager.backup_dir)
+        
+        if sys.platform == 'win32':
+            os.startfile(backup_dir)
+        elif sys.platform == 'darwin':
+            subprocess.run(['open', backup_dir])
+        else:
+            subprocess.run(['xdg-open', backup_dir])
+            
+    def create_manual_backup(self):
+        """创建手动备份"""
+        if self.parent.user_manager.current_user_db:
+            success, message, path = self.parent.backup_manager.create_backup(
+                self.parent.user_manager.current_user_db.db_path,
+                "manual",
+                f"手动备份 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            if success:
+                self.parent.status_bar.showMessage(f"✅ 备份创建成功", 3000)
+            else:
+                self.parent.status_bar.showMessage(f"❌ 备份失败: {message}", 3000)
+        else:
+            self.parent.status_bar.showMessage("⚠️ 数据库未连接", 2000)
+            
+    def show_backup_dialog(self):
+        """显示备份管理对话框"""
+        if self.parent.user_manager.current_user_db:
+            dialog = BackupRestoreDialogPro(
+                self.parent.backup_manager,
+                self.parent.user_manager.current_user_db.db_path,
+                self
+            )
+            dialog.exec()
+        else:
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
+            
+    def reset_main_window_size(self):
+        """重置主窗口大小"""
+        self.parent.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+        self.parent.status_bar.showMessage("✅ 窗口大小已重置", 2000)
+    
     def save_settings(self):
         """保存设置"""
         self.parent.backup_manager.set_max_backups(self.max_backups_spin.value())
@@ -10401,16 +11792,15 @@ class SettingsDialogPro(QDialog):
         else:
             self.parent.backup_timer.stop()
         self.parent.user_manager.save_user_setting("auto_backup", str(auto_backup).lower())
-    
-        # 修改这里：保存调试模式设置到数据库
+        
         debug_mode = self.debug_check.isChecked()
         self.parent.user_manager.save_user_setting("debug_mode", "1" if debug_mode else "0")
         
-        # 同时更新全局变量
         global DEBUG_MODE
         DEBUG_MODE = debug_mode
         
-        QMessageBox.information(self, "成功", "设置已保存")
+        self.parent.status_bar.showMessage("✅ 设置已保存", 2000)
+
 
 
 class BatchImportDialog(QDialog):
@@ -10631,7 +12021,7 @@ class BatchImportDialog(QDialog):
                     continue
                     
             if content is None:
-                QMessageBox.warning(self, "错误", "无法识别文件编码，请确保文件为文本格式")
+                self.parent_gui.status_bar.showMessage("⚠️ 无法识别文件编码，请确保文件为文本格式", 3000)
                 return
                 
             # 切换到文本输入模式显示内容
@@ -10946,10 +12336,10 @@ class BatchImportDialog(QDialog):
         if method == 0:  # 文件导入
             file_path = self.file_path_edit.text().strip()
             if not file_path:
-                QMessageBox.warning(self, "提示", "请先选择文件")
+                self.parent_gui.status_bar.showMessage("⚠️ 请先选择文件", 3000)
                 return
             if not os.path.exists(file_path):
-                QMessageBox.warning(self, "提示", "文件不存在")
+                self.parent_gui.status_bar.showMessage("⚠️ 文件不存在", 3000)
                 return
             self.load_file_content(file_path)
             return
@@ -10957,12 +12347,12 @@ class BatchImportDialog(QDialog):
         # 文本导入
         content = self.text_edit.toPlainText().strip()
         if not content:
-            QMessageBox.warning(self, "提示", "请输入快递单号")
+            self.parent_gui.status_bar.showMessage("⚠️ 请输入快递单号", 3000)
             return
             
         separator = self.get_separator()
         if not separator:
-            QMessageBox.warning(self, "提示", "请输入自定义分隔符")
+            self.parent_gui.status_bar.showMessage("⚠️ 请输入自定义分隔符", 3000)
             return
             
         # 分割内容
@@ -11973,6 +13363,8 @@ class BatchExportDialog(QDialog):
         index = self.format_combo.currentIndex()
         formats = ['txt', 'csv', 'json']
         return formats[index]
+
+
 
 def main():
     """主函数"""
