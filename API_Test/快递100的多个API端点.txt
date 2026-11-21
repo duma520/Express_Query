@@ -1,0 +1,41 @@
+# 快递100的多个API端点
+API_ENDPOINTS = [
+    {
+        "name": "标准查询接口 (poll.kuaidi100.com)",
+        "url": "https://poll.kuaidi100.com/poll/query.do",
+        "method": "POST",
+        "params_template": {"customer": CUSTOMER, "sign": "", "param": ""}
+    },
+    {
+        "name": "企业版查询接口 (api.kuaidi100.com)",
+        "url": "https://api.kuaidi100.com/enterprise/query",
+        "method": "POST",
+        "params_template": {"customer": CUSTOMER, "sign": "", "param": ""}
+    },
+    {
+        "name": "实时查询接口 V2 (poll.kuaidi100.com/v2)",
+        "url": "https://poll.kuaidi100.com/poll/v2/query.do",
+        "method": "POST",
+        "params_template": {"customer": CUSTOMER, "sign": "", "param": ""}
+    },
+    {
+        "name": "国际版查询接口 (api.kuaidi100.com/intl)",
+        "url": "https://api.kuaidi100.com/intl/query",
+        "method": "POST",
+        "params_template": {"customer": CUSTOMER, "sign": "", "param": ""}
+    },
+    {
+        "name": "备用查询接口 (m.kuaidi100.com)",
+        "url": "https://m.kuaidi100.com/query",
+        "method": "GET",
+        "params_template": {"type": COMPANY_CODE, "postid": TRACKING_NUM}
+    },
+    {
+        "name": "自动识别接口 (www.kuaidi100.com/autonumber)",
+        "url": "https://www.kuaidi100.com/autonumber/auto",
+        "method": "POST",
+        "params_template": {"num": TRACKING_NUM, "key": AUTH_KEY}
+    },
+]
+
+https://www.kuaidi100.com/query - 快递100的公开查询接口，无需认证

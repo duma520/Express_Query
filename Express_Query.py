@@ -15,13 +15,18 @@ import time
 from threading import Lock
 import base64
 from io import BytesIO
+
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFormLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget,
     QListWidgetItem, QTextEdit, QScrollArea, QProgressBar, QStatusBar,
     QTabWidget, QDialog, QFileDialog, QMessageBox, QInputDialog, QCheckBox,
-    QSpinBox, QDateEdit, QCalendarWidget, QMenu, QSplitter, QHeaderView
+    QSpinBox, QDateEdit, QCalendarWidget, QMenu, QSplitter, QHeaderView,
+    QProgressDialog
 )
 
 from PySide6.QtCore import (
@@ -52,7 +57,7 @@ APP_DIR = get_app_dir()
 # ==================== 项目信息元数据 ====================
 class ProjectInfo:
     """项目信息元数据（集中管理所有项目相关信息）"""
-    VERSION = "1.1.71"  # 更新版本号
+    VERSION = "2.0"  # 更新版本号
     BUILD_DATE = "2026-04-12"
     AUTHOR = "杜玛"
     LICENSE = "GNU Affero General Public License v3.0"
@@ -1078,7 +1083,7 @@ class LogisticsNodeAnalyzer:
                     break
 
         # 2. 提取电话
-        # 支持格式：18521190082、(18521190082)、[18521190082]、电话:18521190082
+        # 支持格式：***已脱敏***-手机号、(***已脱敏***-手机号)、[***已脱敏***-手机号]、电话:***已脱敏***-手机号
         phone_match = re.search(r'[（(]?(\d{11})[）)]?', context)
         if not phone_match:
             phone_match = re.search(r'电话[:：]?\s*(\d{11})', context)
@@ -2622,6 +2627,190 @@ class LogisticsNodeAnalyzer:
         return text
 
 
+    def estimate_arrival_to_destination(self, express_data: Dict, dest_address: str) -> Optional[Dict]:
+        """
+        预估到达指定收件地址的时间
+        
+        Args:
+            express_data: 快递数据
+            dest_address: 目标收件地址（城市或站点名）
+        
+        Returns:
+            预估信息字典，包含 hours（预估小时数）、confidence（置信度）等
+        """
+        track_list = express_data.get('data', [])
+        if not track_list:
+            return None
+        
+        company_code = express_data.get('com', '')
+        if not company_code:
+            company_code = express_data.get('company_code', '')
+        
+        state = str(express_data.get('state', ''))
+        
+        # 已签收则无需预估
+        if state == '3':
+            return {'hours': 0, 'is_arrived': True, 'note': '已签收', 'confidence': 100}
+        
+        nodes = self.extract_nodes_from_track(track_list)
+        if not nodes:
+            return None
+        
+        last_node = nodes[-1]
+        current_site = last_node['site_name']
+        current_city = last_node['city']
+        current_action = last_node['action_type']
+        
+        # 检查是否已经到达目标地址
+        if dest_address:
+            # 检查当前站点是否就是目标地址
+            if current_site and dest_address in current_site:
+                return {'hours': 0, 'is_arrived': True, 'note': '已到达目标站点', 'confidence': 100}
+            if current_city and dest_address in current_city:
+                # 检查是否在目标城市
+                for node in nodes:
+                    if node.get('action_type') == 'arrived_pickup' or node.get('action_type') == 'delivering':
+                        return {'hours': 0, 'is_arrived': True, 'note': '已到达目标城市', 'confidence': 80}
+        
+        # 如果正在派送中，预估签收时间较短
+        if current_action == 'delivering':
+            return {'hours': 2, 'confidence': 50, 'note': '派送中，预计2小时内送达', 'is_same_company': True}
+        
+        estimates = []
+        
+        # 1. 查询从当前站点到目标地址的运输时间
+        if current_site and dest_address:
+            sql = """
+            SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples, 
+                MIN(min_hours) as min_hours, MAX(max_hours) as max_hours, company_code
+            FROM node_transit_history
+            WHERE from_site = ? AND (to_site LIKE ? OR to_city LIKE ?)
+            GROUP BY company_code
+            ORDER BY total_samples DESC
+            """
+            search_pattern = f"%{dest_address}%"
+            results = self.db_manager.execute_query(sql, (current_site, search_pattern, search_pattern))
+            
+            for row in results:
+                if row['avg_hours']:
+                    estimates.append({
+                        'hours': row['avg_hours'],
+                        'confidence': row['total_samples'] or 1,
+                        'is_same_company': row['company_code'] == company_code,
+                        'source': '站点匹配',
+                        'min_hours': row.get('min_hours'),
+                        'max_hours': row.get('max_hours')
+                    })
+        
+        # 2. 如果没找到，按城市查询
+        if not estimates and current_city and dest_address:
+            # 尝试从目标地址中提取城市
+            dest_city = self._extract_city(dest_address)
+            if not dest_city:
+                dest_city = dest_address
+            
+            sql = """
+            SELECT AVG(avg_hours) as avg_hours, SUM(sample_count) as total_samples,
+                MIN(min_hours) as min_hours, MAX(max_hours) as max_hours, company_code
+            FROM node_transit_history
+            WHERE from_city = ? AND (to_city LIKE ? OR to_site LIKE ?)
+            GROUP BY company_code
+            ORDER BY total_samples DESC
+            """
+            results = self.db_manager.execute_query(sql, (current_city, f"%{dest_city}%", search_pattern))
+            
+            for row in results:
+                if row['avg_hours']:
+                    estimates.append({
+                        'hours': row['avg_hours'],
+                        'confidence': row['total_samples'] or 1,
+                        'is_same_company': row['company_code'] == company_code,
+                        'source': '城市匹配',
+                        'min_hours': row.get('min_hours'),
+                        'max_hours': row.get('max_hours')
+                    })
+        
+        # 3. 如果还是没有，从 delivery_history 表查询同目的地的签收时间
+        if not estimates and current_city:
+            sql = """
+            SELECT AVG((julianday(sign_time) - julianday(pickup_time)) * 24) as avg_hours, 
+                COUNT(*) as count, company_code
+            FROM delivery_history 
+            WHERE dest_city LIKE ? AND sign_time IS NOT NULL AND pickup_time IS NOT NULL
+            GROUP BY company_code
+            ORDER BY count DESC
+            """
+            results = self.db_manager.execute_query(sql, (search_pattern,))
+            
+            for row in results:
+                if row['avg_hours'] and row['avg_hours'] > 0:
+                    # 计算已经过去的时间
+                    if nodes and len(nodes) > 0:
+                        first_time = nodes[0]['time']
+                        elapsed_hours = (datetime.now() - first_time).total_seconds() / 3600
+                        remaining_hours = max(0, row['avg_hours'] - elapsed_hours)
+                    else:
+                        remaining_hours = row['avg_hours']
+                    
+                    estimates.append({
+                        'hours': remaining_hours,
+                        'confidence': row['count'] or 1,
+                        'is_same_company': row['company_code'] == company_code,
+                        'source': '历史签收数据'
+                    })
+        
+        # 4. 如果还是没有，按快递公司默认时效预估
+        if not estimates:
+            default_hours = {
+                'shunfeng': 24,
+                'jd': 24,
+                'yuantong': 48,
+                'zhongtong': 48,
+                'yunda': 48,
+                'shentong': 48,
+                'ems': 72,
+                'youzhengguo': 96,
+                'jtexpress': 48,
+            }
+            hours = default_hours.get(company_code, 48)
+            estimates.append({
+                'hours': hours,
+                'confidence': 1,
+                'is_same_company': True,
+                'source': '默认时效'
+            })
+        
+        if estimates:
+            # 优先选择同公司的预估
+            same_company = [e for e in estimates if e['is_same_company']]
+            if same_company:
+                best = max(same_company, key=lambda x: x['confidence'])
+            else:
+                best = max(estimates, key=lambda x: x['confidence'])
+            
+            confidence = best.get('confidence', 1)
+            confidence_level = '高' if confidence >= 5 else ('中' if confidence >= 2 else '低')
+            
+            note_parts = [f"预计 {best['hours']:.1f} 小时后到达"]
+            if best.get('source'):
+                note_parts.append(f"({best['source']})")
+            if not best.get('is_same_company', True):
+                note_parts.append("[跨公司参考]")
+            
+            return {
+                'hours': round(best['hours'], 1),
+                'confidence': confidence,
+                'confidence_level': confidence_level,
+                'is_same_company': best.get('is_same_company', True),
+                'source': best.get('source', '未知'),
+                'note': ' '.join(note_parts),
+                'min_hours': best.get('min_hours'),
+                'max_hours': best.get('max_hours')
+            }
+        
+        return None
+
+
 class DeliveryTimeEstimator:
     """送达时间预估器 - 基于历史数据"""
     
@@ -3011,6 +3200,10 @@ class ApiAccountManager:
         # 刷新固定排序设置
         self.fixed_order = self.load_fixed_order_setting()
         
+        # ========== 保存当前账号ID ==========
+        current_id = self.current_account['id'] if self.current_account else None
+        # ======================================
+        
         query = """
         SELECT * FROM api_accounts 
         WHERE is_active = 1 
@@ -3043,8 +3236,27 @@ class ApiAccountManager:
                 account['used_today'] = 0
                 account['last_used_date'] = None
         
-        if self.accounts:
-            self.current_account = self.accounts[0]
+        # ========== 恢复当前账号 ==========
+        if current_id:
+            # 在 accounts 列表中查找之前保存的账号
+            found = False
+            for acc in self.accounts:
+                if acc['id'] == current_id:
+                    self.current_account = acc
+                    found = True
+                    break
+            # 如果之前的账号不在列表中（可能被删除），才使用第一个
+            if not found:
+                if self.accounts:
+                    self.current_account = self.accounts[0]
+                else:
+                    self.current_account = None
+        else:
+            if self.accounts:
+                self.current_account = self.accounts[0]
+            else:
+                self.current_account = None
+
             
     def get_current_account(self) -> Dict:
         """获取当前账号"""
@@ -3285,6 +3497,494 @@ class ApiAccountManager:
         return {'used': 0, 'limit': 100, 'remaining': 100}
 
 
+
+# ==================== API接口配置管理 ====================
+class ApiEndpointManager:
+    """API接口配置管理器 - 支持多个API接口切换"""
+    
+    # 快递100收费接口
+    KUAIDI100_PAID = {
+        'name': '快递100收费接口',
+        'type': 'paid',
+        'url': 'https://poll.kuaidi100.com/poll/query.do',
+        'description': '快递100官方收费接口，需要Customer和Auth Key，稳定性高，支持自动切换账号'
+    }
+    
+    # 快递100免费接口
+    KUAIDI100_FREE = {
+        'name': '快递100免费接口',
+        'type': 'free',
+        'url': 'https://www.kuaidi100.com/query',
+        'description': '快递100官方免费查询接口，无需认证，但有频率限制，适合少量查询'
+    }
+    
+    def __init__(self, db_manager: DatabaseManagerPro):
+        self.db_manager = db_manager
+        self.current_endpoint = None
+        self.init_endpoint_table()
+        self.load_current_endpoint()
+        
+    def init_endpoint_table(self):
+        """初始化API接口配置表"""
+        sql = """
+        CREATE TABLE IF NOT EXISTS api_endpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            endpoint_type TEXT NOT NULL,
+            url TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            is_current INTEGER DEFAULT 0,
+            description TEXT,
+            priority INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        self.db_manager.execute_update(sql)
+        
+        # 检查是否有默认配置（只检查表是否有记录，而不是检查 is_active 的数量）
+        check_sql = "SELECT COUNT(*) as count FROM api_endpoints"
+        result = self.db_manager.execute_query(check_sql)
+        
+        if result and result[0]['count'] == 0:
+            # 插入默认接口配置
+            default_endpoints = [
+                (self.KUAIDI100_PAID['name'], 'paid', self.KUAIDI100_PAID['url'], 1, 
+                self.KUAIDI100_PAID['description'], 100),
+                (self.KUAIDI100_FREE['name'], 'free', self.KUAIDI100_FREE['url'], 0,
+                self.KUAIDI100_FREE['description'], 50),
+            ]
+            
+            for endpoint in default_endpoints:
+                insert_sql = """
+                INSERT INTO api_endpoints (name, endpoint_type, url, is_current, description, priority)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """
+                self.db_manager.execute_update(insert_sql, endpoint)
+            
+            # 设置收费接口为当前使用
+            self.db_manager.execute_update(
+                "UPDATE api_endpoints SET is_current = 1 WHERE name = ?", 
+                (self.KUAIDI100_PAID['name'],)
+            )
+            if DEBUG_MODE:
+                print("[接口初始化] 数据库为空，插入默认接口配置")
+        else:
+            if DEBUG_MODE:
+                print(f"[接口初始化] 数据库已有 {result[0]['count']} 条接口记录，保留现有配置")
+    
+    def load_current_endpoint(self):
+        """加载当前使用的API接口"""
+        sql = """
+        SELECT * FROM api_endpoints 
+        WHERE is_current = 1 AND is_active = 1
+        LIMIT 1
+        """
+        result = self.db_manager.execute_query(sql)
+        
+        if result:
+            self.current_endpoint = result[0]
+            if DEBUG_MODE:
+                print(f"[接口加载] 从数据库加载当前接口: {self.current_endpoint.get('name')}")
+        else:
+            # 如果没有当前接口，选择优先级最高的
+            sql = """
+            SELECT * FROM api_endpoints 
+            WHERE is_active = 1
+            ORDER BY priority DESC, id
+            LIMIT 1
+            """
+            result = self.db_manager.execute_query(sql)
+            if result:
+                self.current_endpoint = result[0]
+                if DEBUG_MODE:
+                    print(f"[接口加载] 没有当前接口，使用优先级最高的: {self.current_endpoint.get('name')}")
+                    
+        return self.current_endpoint
+    
+    def get_current_endpoint(self) -> Dict:
+        """获取当前API接口"""
+        if not self.current_endpoint:
+            self.load_current_endpoint()
+        return self.current_endpoint
+    
+    def set_current_endpoint(self, endpoint_id: int) -> bool:
+        """设置当前使用的API接口"""
+        try:
+            # 清除所有接口的 is_current 标记
+            self.db_manager.execute_update("UPDATE api_endpoints SET is_current = 0")
+            # 设置新的当前接口
+            sql = "UPDATE api_endpoints SET is_current = 1 WHERE id = ?"
+            result = self.db_manager.execute_update(sql, (endpoint_id,))
+            
+            if result:
+                self.load_current_endpoint()
+            return result
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"设置API接口失败: {e}")
+            return False
+    
+    def get_all_endpoints(self) -> List[Dict]:
+        """获取所有API接口"""
+        sql = """
+        SELECT * FROM api_endpoints 
+        WHERE is_active = 1
+        ORDER BY priority DESC, id
+        """
+        return self.db_manager.execute_query(sql)
+    
+    def add_endpoint(self, name: str, endpoint_type: str, url: str, description: str = "") -> bool:
+        """添加新的API接口"""
+        try:
+            # 获取最大优先级
+            max_priority_sql = "SELECT MAX(priority) as max_priority FROM api_endpoints"
+            result = self.db_manager.execute_query(max_priority_sql)
+            max_priority = result[0]['max_priority'] if result and result[0]['max_priority'] else 0
+            priority = max_priority - 10  # 新接口优先级较低
+            
+            sql = """
+            INSERT INTO api_endpoints (name, endpoint_type, url, description, priority)
+            VALUES (?, ?, ?, ?, ?)
+            """
+            return self.db_manager.execute_update(sql, (name, endpoint_type, url, description, priority))
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"添加API接口失败: {e}")
+            return False
+    
+    def update_endpoint(self, endpoint_id: int, name: str, url: str, description: str) -> bool:
+        """更新API接口"""
+        sql = """
+        UPDATE api_endpoints 
+        SET name = ?, url = ?, description = ?
+        WHERE id = ?
+        """
+        return self.db_manager.execute_update(sql, (name, url, description, endpoint_id))
+    
+    def delete_endpoint(self, endpoint_id: int) -> bool:
+        """删除API接口（软删除）"""
+        sql = "UPDATE api_endpoints SET is_active = 0 WHERE id = ?"
+        return self.db_manager.execute_update(sql, (endpoint_id,))
+    
+    def get_endpoint_type_name(self, endpoint_type: str) -> str:
+        """获取接口类型名称"""
+        type_map = {
+            'paid': '💰 收费接口',
+            'free': '🆓 免费接口',
+            'custom': '🔧 自定义接口'
+        }
+        return type_map.get(endpoint_type, '📦 其他接口')
+
+class ApiEndpointDialog(QDialog):
+    """API接口管理对话框"""
+    
+    def __init__(self, endpoint_manager: ApiEndpointManager, parent=None):
+        super().__init__(parent)
+        self.endpoint_manager = endpoint_manager
+        self.endpoints = []
+        self.init_ui()
+        self.load_endpoints()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+        
+    def init_ui(self):
+        self.setWindowTitle("API接口管理")
+        self.setMinimumSize(800, 500)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        info_label = QLabel(
+            "管理快递查询API接口，支持收费接口和免费接口切换。\n"
+            "收费接口需要配置Customer和Auth Key，稳定性高；免费接口无需认证，但有频率限制。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; padding: 5px;")
+        layout.addWidget(info_label)
+        
+        # 接口列表
+        list_group = QGroupBox("API接口列表")
+        list_layout = QVBoxLayout()
+        
+        self.endpoint_table = QTableWidget()
+        self.endpoint_table.setColumnCount(6)
+        self.endpoint_table.setHorizontalHeaderLabels([
+            "接口名称", "类型", "API地址", "状态", "当前使用", "操作"
+        ])
+        self.endpoint_table.horizontalHeader().setStretchLastSection(True)
+        self.endpoint_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.endpoint_table.setAlternatingRowColors(True)
+        
+        list_layout.addWidget(self.endpoint_table)
+        list_group.setLayout(list_layout)
+        layout.addWidget(list_group)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        add_btn = QPushButton("➕ 添加自定义接口")
+        add_btn.clicked.connect(self.add_endpoint)
+        btn_layout.addWidget(add_btn)
+        
+        edit_btn = QPushButton("✏️ 编辑接口")
+        edit_btn.clicked.connect(self.edit_endpoint)
+        btn_layout.addWidget(edit_btn)
+        
+        delete_btn = QPushButton("🗑️ 删除接口")
+        delete_btn.clicked.connect(self.delete_endpoint)
+        btn_layout.addWidget(delete_btn)
+        
+        btn_layout.addStretch()
+        
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def load_endpoints(self):
+        """加载接口列表"""
+        self.endpoints = self.endpoint_manager.get_all_endpoints()
+        self.update_table()
+    
+    def update_table(self):
+        """更新表格"""
+        self.endpoint_table.setRowCount(len(self.endpoints))
+        current_endpoint = self.endpoint_manager.get_current_endpoint()
+        current_id = current_endpoint.get('id') if current_endpoint else None
+        
+        for row, endpoint in enumerate(self.endpoints):
+            # 接口名称
+            name_item = QTableWidgetItem(endpoint.get('name', ''))
+            self.endpoint_table.setItem(row, 0, name_item)
+            
+            # 类型
+            type_name = self.endpoint_manager.get_endpoint_type_name(endpoint.get('endpoint_type', 'custom'))
+            type_item = QTableWidgetItem(type_name)
+            if endpoint.get('endpoint_type') == 'free':
+                type_item.setForeground(QColor(0, 150, 0))
+            elif endpoint.get('endpoint_type') == 'paid':
+                type_item.setForeground(QColor(255, 165, 0))
+            self.endpoint_table.setItem(row, 1, type_item)
+            
+            # API地址
+            url = endpoint.get('url', '')
+            display_url = url[:50] + '...' if len(url) > 50 else url
+            self.endpoint_table.setItem(row, 2, QTableWidgetItem(display_url))
+            
+            # 状态
+            status = "启用" if endpoint.get('is_active', 1) else "禁用"
+            status_item = QTableWidgetItem(status)
+            if endpoint.get('is_active', 1):
+                status_item.setForeground(QColor(0, 150, 0))
+            else:
+                status_item.setForeground(QColor(255, 0, 0))
+            self.endpoint_table.setItem(row, 3, status_item)
+            
+            # 当前使用
+            is_current = (endpoint.get('id') == current_id)
+            current_item = QTableWidgetItem("✅ 当前使用" if is_current else "")
+            if is_current:
+                current_item.setForeground(QColor(0, 150, 0))
+            self.endpoint_table.setItem(row, 4, current_item)
+            
+            # 操作按钮
+            btn_widget = QWidget()
+            btn_layout = QHBoxLayout()
+            btn_layout.setContentsMargins(2, 2, 2, 2)
+            
+            if not is_current and endpoint.get('is_active', 1):
+                switch_btn = QPushButton("切换到此接口")
+                switch_btn.clicked.connect(lambda checked, e=endpoint: self.switch_to_endpoint(e))
+                btn_layout.addWidget(switch_btn)
+            
+            btn_widget.setLayout(btn_layout)
+            self.endpoint_table.setCellWidget(row, 5, btn_widget)
+        
+        self.endpoint_table.resizeColumnsToContents()
+    
+    def switch_to_endpoint(self, endpoint: Dict):
+        """切换到指定接口"""
+        reply = QMessageBox.question(
+            self, "确认切换",
+            f"确定要切换到接口「{endpoint.get('name')}」吗？\n\n"
+            f"接口类型: {self.endpoint_manager.get_endpoint_type_name(endpoint.get('endpoint_type', 'custom'))}\n"
+            f"API地址: {endpoint.get('url')}\n\n"
+            f"{'⚠️ 免费接口可能有频率限制，适合少量查询。' if endpoint.get('endpoint_type') == 'free' else '收费接口需要配置有效的Customer和Auth Key。'}",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.endpoint_manager.set_current_endpoint(endpoint['id']):
+                QMessageBox.information(self, "成功", f"已切换到接口「{endpoint.get('name')}」")
+                self.load_endpoints()
+                
+                # 通知主窗口刷新
+                if hasattr(self.parent(), 'refresh_api_endpoint'):
+                    self.parent().refresh_api_endpoint()
+            else:
+                QMessageBox.critical(self, "失败", "切换接口失败")
+    
+    def add_endpoint(self):
+        """添加自定义接口"""
+        dialog = ApiEndpointEditDialog(self.endpoint_manager, None, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.load_endpoints()
+    
+    def edit_endpoint(self):
+        """编辑接口"""
+        row = self.endpoint_table.currentRow()
+        if row < 0 or row >= len(self.endpoints):
+            QMessageBox.warning(self, "提示", "请先选择要编辑的接口")
+            return
+        
+        endpoint = self.endpoints[row]
+        # 只允许编辑自定义接口
+        if endpoint.get('endpoint_type') == 'custom':
+            dialog = ApiEndpointEditDialog(self.endpoint_manager, endpoint, self)
+            if dialog.exec() == QDialog.Accepted:
+                self.load_endpoints()
+        else:
+            QMessageBox.information(self, "提示", "预设接口不可编辑，如需修改请添加自定义接口")
+    
+    def delete_endpoint(self):
+        """删除接口"""
+        row = self.endpoint_table.currentRow()
+        if row < 0 or row >= len(self.endpoints):
+            QMessageBox.warning(self, "提示", "请先选择要删除的接口")
+            return
+        
+        endpoint = self.endpoints[row]
+        
+        # 检查是否是当前使用的接口
+        current = self.endpoint_manager.get_current_endpoint()
+        if current and current.get('id') == endpoint.get('id'):
+            QMessageBox.warning(self, "提示", "不能删除当前正在使用的接口，请先切换到其他接口")
+            return
+        
+        # 只允许删除自定义接口
+        if endpoint.get('endpoint_type') != 'custom':
+            QMessageBox.warning(self, "提示", "预设接口不可删除")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除接口「{endpoint.get('name')}」吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.endpoint_manager.delete_endpoint(endpoint['id']):
+                self.load_endpoints()
+                QMessageBox.information(self, "成功", "接口已删除")
+            else:
+                QMessageBox.critical(self, "失败", "删除接口失败")
+
+class ApiEndpointEditDialog(QDialog):
+    """API接口编辑对话框"""
+    
+    def __init__(self, endpoint_manager: ApiEndpointManager, endpoint: Dict = None, parent=None):
+        super().__init__(parent)
+        self.endpoint_manager = endpoint_manager
+        self.endpoint = endpoint
+        self.init_ui()
+        
+        if endpoint:
+            self.load_data()
+        
+        self.setStyleSheet(MacaronStyle.get_main_style())
+    
+    def init_ui(self):
+        title = "编辑自定义接口" if self.endpoint else "添加自定义接口"
+        self.setWindowTitle(title)
+        self.setMinimumSize(500, 300)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        form_layout = QFormLayout()
+        
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("例如：我的自定义API")
+        form_layout.addRow("接口名称:", self.name_edit)
+        
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("https://api.example.com/query")
+        form_layout.addRow("API地址:", self.url_edit)
+        
+        self.description_edit = QTextEdit()
+        self.description_edit.setPlaceholderText("接口描述、注意事项等")
+        self.description_edit.setMaximumHeight(80)
+        form_layout.addRow("描述:", self.description_edit)
+        
+        layout.addLayout(form_layout)
+        
+        info_label = QLabel(
+            "提示：自定义接口需要返回JSON格式数据，建议包含 nu、com、state、data 字段。\n"
+            "如果不确定格式，建议使用预设的收费或免费接口。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px; padding: 5px;")
+        layout.addWidget(info_label)
+        
+        layout.addStretch()
+        
+        btn_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("保存")
+        save_btn.clicked.connect(self.save_endpoint)
+        btn_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def load_data(self):
+        """加载数据"""
+        if self.endpoint:
+            self.name_edit.setText(self.endpoint.get('name', ''))
+            self.url_edit.setText(self.endpoint.get('url', ''))
+            self.description_edit.setText(self.endpoint.get('description', ''))
+    
+    def save_endpoint(self):
+        """保存接口"""
+        name = self.name_edit.text().strip()
+        url = self.url_edit.text().strip()
+        description = self.description_edit.toPlainText().strip()
+        
+        if not name:
+            QMessageBox.warning(self, "提示", "请输入接口名称")
+            return
+        
+        if not url:
+            QMessageBox.warning(self, "提示", "请输入API地址")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            QMessageBox.warning(self, "提示", "API地址应以 http:// 或 https:// 开头")
+            return
+        
+        if self.endpoint:
+            # 编辑
+            if self.endpoint_manager.update_endpoint(self.endpoint['id'], name, url, description):
+                self.accept()
+            else:
+                QMessageBox.critical(self, "失败", "保存接口失败")
+        else:
+            # 新增
+            if self.endpoint_manager.add_endpoint(name, 'custom', url, description):
+                self.accept()
+            else:
+                QMessageBox.critical(self, "失败", "添加接口失败")
+
+
+
 class ApiAccountDialog(DialogWithStatusBar):
     """API账号管理对话框"""
     
@@ -3409,6 +4109,7 @@ class ApiAccountDialog(DialogWithStatusBar):
         self.load_auto_switch_setting()
         
     def load_accounts(self):
+        """加载账号列表（仅用于对话框显示，不影响主窗口当前账号）"""
         query = """
         SELECT * FROM api_accounts 
         WHERE is_active = 1 
@@ -3567,8 +4268,7 @@ class ApiAccountDialog(DialogWithStatusBar):
             sql2 = "UPDATE api_accounts SET sort_order = 0 WHERE id = ?"
             self.db_manager.execute_update(sql2, (account['id'],))
         
-        self.load_accounts()
-        
+        # ========== 从主窗口获取 api_account_manager ==========
         from PySide6.QtWidgets import QApplication
         
         main_window = None
@@ -3578,9 +4278,30 @@ class ApiAccountDialog(DialogWithStatusBar):
                 break
         
         if main_window and hasattr(main_window, 'api_account_manager'):
-            main_window.api_account_manager.load_accounts()
-            main_window.load_current_api_account()
+            am = main_window.api_account_manager
+            
+            # 1. 直接设置 current_account 为目标账号
+            am.current_account = account
+            
+            # 2. 只刷新列表数据，不改变 current_account
+            am._refresh_accounts_list()
+            
+            # 3. 更新主窗口的 customer 和 key
+            main_window.customer = account.get('customer', '')
+            main_window.key = account.get('auth_key', '')
             main_window.update_api_account_display()
+            
+            if DEBUG_MODE:
+                print(f"[设为当前] 已切换到账号: {account.get('account_name', '')} (ID={account['id']})")
+        
+        # 4. 只刷新对话框自己的账号列表显示，不触发 ApiAccountManager 的 load_accounts
+        query = """
+        SELECT * FROM api_accounts 
+        WHERE is_active = 1 
+        ORDER BY sort_order, id
+        """
+        self.accounts = self.db_manager.execute_query(query)
+        self.update_table()
         
         self.show_status(f"✅ 已将 '{account['account_name']}' 设为当前使用账号", 3000)
         
@@ -3848,8 +4569,7 @@ class ApiAccountDialog(DialogWithStatusBar):
             QMessageBox.critical(self, "导入失败", f"导入账号时发生错误：\n{str(e)}")
 
     def closeEvent(self, event):
-        """关闭事件 - 通知主窗口刷新账号"""
-        # 通知主窗口刷新账号
+        """关闭事件 - 只刷新主窗口显示，不改变当前账号"""
         from PySide6.QtWidgets import QApplication
         
         main_window = None
@@ -3859,8 +4579,7 @@ class ApiAccountDialog(DialogWithStatusBar):
                 break
         
         if main_window and hasattr(main_window, 'api_account_manager'):
-            main_window.api_account_manager.load_accounts()
-            main_window.load_current_api_account()
+            # 只刷新显示，不重新加载账号（避免重置 current_account）
             main_window.update_api_account_display()
         
         event.accept()
@@ -4159,6 +4878,7 @@ class UserManagerPro:
         """
         db_manager.execute_update(query_history_sql)
         
+        # 修改 express_summary 表，添加 dest_address 和 dest_site 字段
         express_summary_sql = """
         CREATE TABLE IF NOT EXISTS express_summary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4171,13 +4891,25 @@ class UserManagerPro:
             screenshot TEXT,
             latest_track TEXT,
             result_data TEXT,
+            dest_address TEXT,
+            dest_site TEXT,
             last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_deleted INTEGER DEFAULT 0
         )
         """
         db_manager.execute_update(express_summary_sql)
-        
+    
+        # 尝试添加新字段（如果表已存在但缺少字段）
+        try:
+            db_manager.execute_update("ALTER TABLE express_summary ADD COLUMN dest_address TEXT")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE express_summary ADD COLUMN dest_site TEXT")
+        except:
+            pass
+    
         api_accounts_sql = """
         CREATE TABLE IF NOT EXISTS api_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4215,13 +4947,30 @@ class UserManagerPro:
             dest_city TEXT,
             pickup_time TEXT,
             sign_time TEXT,
+            arrival_time TEXT,
             delivery_days INTEGER,
+            arrival_days INTEGER,
             route_key TEXT,
+            delivery_type TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tracking_number, company_code)
         )
         """
         db_manager.execute_update(delivery_history_sql)
+        
+        # 尝试添加 delivery_history 表的新字段
+        try:
+            db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_time TEXT")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN arrival_days INTEGER")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE delivery_history ADD COLUMN delivery_type TEXT")
+        except:
+            pass
         
         # 节点历史表
         node_transit_history_sql = """
@@ -4255,6 +5004,36 @@ class UserManagerPro:
         except:
             pass
         
+        # ========== 新增：收件地址管理表 ==========
+        dest_address_sql = """
+        CREATE TABLE IF NOT EXISTS dest_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,              -- 地址名称（如：家、公司）
+            address TEXT NOT NULL,           -- 地址内容
+            address_type TEXT DEFAULT 'custom', -- 类型：custom(自定义) 或 site(站点)
+            is_default INTEGER DEFAULT 0,    -- 是否默认使用
+            sort_order INTEGER DEFAULT 0,    -- 排序
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        db_manager.execute_update(dest_address_sql)
+        
+        # 尝试添加新字段（如果表已存在但缺少字段）
+        try:
+            db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN address_type TEXT DEFAULT 'custom'")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN is_default INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN sort_order INTEGER DEFAULT 0")
+        except:
+            pass
+        
+        # 创建索引
         index_sqls = [
             "CREATE INDEX IF NOT EXISTS idx_tracking_number ON express_query_history(tracking_number)",
             "CREATE INDEX IF NOT EXISTS idx_query_time ON express_query_history(query_time)",
@@ -4514,67 +5293,148 @@ class BackupManagerPro:
 
 
 class ExpressQueryThreadPro(QThread):
-    """快递查询线程"""
+    """快递查询线程 - 支持多种API接口和验证码"""
     finished = Signal(dict)
     progress = Signal(int)
+    need_verification = Signal(str, str, str)  # 新增信号：需要验证码 (单号, 公司名, 公司代码)
     
-    def __init__(self, tracking_num: str, company_code: str, customer: str, key: str):
+    def __init__(self, tracking_num: str, company_code: str, customer: str, key: str, 
+                 endpoint: Dict = None, auto_detect: bool = True, verification_code: str = ""):
         super().__init__()
         self.tracking_num = tracking_num
         self.company_code = company_code
         self.customer = customer
         self.key = key
+        self.endpoint = endpoint
+        self.auto_detect = auto_detect
+        self.verification_code = verification_code  # 新增：验证码/手机尾号
         
     def run(self):
         try:
             self.progress.emit(20)
             
-            param = {
-                'com': self.company_code,
-                'num': self.tracking_num
-            }
-            
-            self.progress.emit(40)
-            
-            param_str = json.dumps(param, separators=(',', ':'))
-            sign_str = param_str + self.key + self.customer
-            sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
-            
-            url = 'https://poll.kuaidi100.com/poll/query.do'
-            data = {
-                'customer': self.customer,
-                'sign': sign,
-                'param': param_str
-            }
-            
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            self.progress.emit(60)
-            
-            response = requests.post(url, data=data, headers=headers, timeout=10)
-            
+            # 如果没有指定接口，使用默认的收费接口逻辑
+            if self.endpoint is None:
+                self._query_with_paid_api()
+            else:
+                # 根据接口类型选择查询方法
+                if self.endpoint.get('endpoint_type') == 'paid':
+                    self._query_with_paid_api()
+                elif self.endpoint.get('endpoint_type') == 'free':
+                    self._query_with_free_api()
+                else:
+                    self._query_with_custom_api()
+                    
+        except Exception as e:
+            self.finished.emit({'success': False, 'error': str(e)})
+    
+    def _check_need_verification(self, result: dict, response_text: str = "") -> bool:
+        """检查是否需要验证码"""
+        # 检查返回结果中的错误信息
+        message = result.get('message', '').lower()
+        return_code = str(result.get('returnCode', ''))
+        status = str(result.get('status', ''))
+        
+        # 需要验证码的特征
+        verification_keywords = [
+            '验证码', '手机尾号', '验证', '手机号', '收件人手机',
+            '需要验证', '请输入', '校验', 'verification', 'captcha'
+        ]
+        
+        # 检查错误信息
+        for keyword in verification_keywords:
+            if keyword in message:
+                return True
+        
+        # 检查特定的返回码（快递100验证码相关）
+        if return_code in ['501', '502', '503', '504']:
+            return True
+        
+        # 检查中通快递的特殊情况
+        if '中通' in str(result) or 'zhongtong' in str(result).lower():
+            if '验证' in message or '参数异常' in message:
+                return True
+        
+        return False
+    
+    def _query_with_paid_api(self):
+        """使用收费API查询"""
+        self.progress.emit(30)
+        
+        param = {
+            'com': self.company_code,
+            'num': self.tracking_num
+        }
+        
+        if self.verification_code:
+            param['phone'] = self.verification_code
+        
+        self.progress.emit(40)
+        
+        param_str = json.dumps(param, separators=(',', ':'))
+        sign_str = param_str + self.key + self.customer
+        sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
+        
+        url = 'https://poll.kuaidi100.com/poll/query.do'
+        data = {
+            'customer': self.customer,
+            'sign': sign,
+            'param': param_str
+        }
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        self.progress.emit(60)
+        
+        # 获取代理设置（如果需要）
+        proxies = None
+        if hasattr(self, 'parent_gui') and self.parent_gui:
+            proxy_settings = getattr(self.parent_gui, 'proxy_settings', {})
+            if proxy_settings.get('enabled', False) and proxy_settings.get('for_api', False):
+                proxies = self.parent_gui.get_proxy_dict()
+        
+        try:
+            response = requests.post(url, data=data, headers=headers, timeout=15, proxies=proxies)
             self.progress.emit(80)
             
-            quota_info = self.extract_quota_info(response.headers)
-            
+            quota_info = self._extract_quota_info(response.headers)
             result = response.json()
             
             self.progress.emit(100)
             
-            # 快递100 API 返回的状态码说明：
-            # 200: 查询成功，有物流轨迹
-            # 0: 查询成功，但暂无物流信息（未揽件）
-            # -1: 单号不存在（也可能是未揽件的情况）
+            # 检查是否需要验证码
+            if self._check_need_verification(result):
+                # 如果没有提供验证码，发出需要验证码的信号
+                if not self.verification_code:
+                    company_name = self._get_company_name(self.company_code)
+                    self.need_verification.emit(self.tracking_num, company_name, self.company_code)
+                    self.finished.emit({
+                        'success': False, 
+                        'error': '需要输入收件人手机尾号验证',
+                        'need_verification': True,
+                        'tracking_num': self.tracking_num,
+                        'company_code': self.company_code
+                    })
+                    return
+                else:
+                    # 验证码错误
+                    self.finished.emit({
+                        'success': False,
+                        'error': '验证码错误，请重新输入正确的手机尾号',
+                        'need_verification': True,
+                        'verification_failed': True,
+                        'tracking_num': self.tracking_num,
+                        'company_code': self.company_code
+                    })
+                    return
+            
             status = result.get('status', '')
             return_code = result.get('returnCode', '')
             message = result.get('message', '')
             
-            # 成功的情况：
-            # 1. status == '200' 或 returnCode == '200'
-            # 2. 返回"暂无物流信息"、"单号不存在"等情况，说明单号有效只是还没揽件
             if status == '200' or return_code == '200':
                 self.finished.emit({
                     'success': True, 
@@ -4582,25 +5442,6 @@ class ExpressQueryThreadPro(QThread):
                     'quota_info': quota_info
                 })
             elif message in ['暂无物流信息', '单号不存在', '暂无轨迹'] or '暂无' in message or '无物流' in message:
-                # 未揽件的情况，构造一个基本的数据结构以便添加到汇总
-                # 确保 data 字段存在
-                if 'data' not in result:
-                    result['data'] = []
-                if 'state' not in result:
-                    result['state'] = '0'  # 在途中/待揽件
-                if 'nu' not in result:
-                    result['nu'] = self.tracking_num
-                if 'com' not in result:
-                    result['com'] = self.company_code
-                    
-                self.finished.emit({
-                    'success': True, 
-                    'data': result,
-                    'quota_info': quota_info,
-                    'is_pending': True  # 标记为待揽件
-                })
-            elif status == '0':
-                # 某些情况下 status=0 也表示暂无物流信息
                 if 'data' not in result:
                     result['data'] = []
                 if 'state' not in result:
@@ -4617,18 +5458,287 @@ class ExpressQueryThreadPro(QThread):
                     'is_pending': True
                 })
             else:
-                # 真正的失败
                 error_msg = message or '查询失败'
                 self.finished.emit({
                     'success': False, 
                     'error': error_msg,
                     'quota_info': quota_info
                 })
-            
+                
         except Exception as e:
             self.finished.emit({'success': False, 'error': str(e)})
+
+    def _query_with_free_api(self):
+        """使用免费API查询"""
+        self.progress.emit(30)
+        
+        # 如果需要自动识别公司代码
+        if self.auto_detect and not self.company_code:
+            detected_com = self._auto_detect_company(self.tracking_num)
+            if detected_com:
+                self.company_code = detected_com
+                self.progress.emit(45)
+        
+        # 免费API的URL
+        url = 'https://www.kuaidi100.com/query'
+        params = {
+            'type': self.company_code,
+            'postid': self.tracking_num,
+            'temp': int(time.time() * 1000)
+        }
+        
+        # 如果有验证码，添加手机尾号参数
+        if self.verification_code:
+            params['phone'] = self.verification_code
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.kuaidi100.com/',
+            'Accept': 'application/json, text/javascript, */*; q=0.01'
+        }
+        
+        self.progress.emit(60)
+        
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            self.progress.emit(80)
             
-    def extract_quota_info(self, headers: Dict) -> Dict:
+            if DEBUG_MODE:
+                print(f"免费接口HTTP状态码: {response.status_code}")
+                print(f"免费接口返回结果: {response.text[:500]}")
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                except:
+                    # 可能返回的是HTML（验证码页面）
+                    self.finished.emit({
+                        'success': False,
+                        'error': 'API返回格式错误，可能需要验证码',
+                        'need_verification': True,
+                        'tracking_num': self.tracking_num,
+                        'company_code': self.company_code
+                    })
+                    return
+                
+                # 检查是否需要验证码
+                if self._check_need_verification(result):
+                    if not self.verification_code:
+                        company_name = self._get_company_name(self.company_code)
+                        self.need_verification.emit(self.tracking_num, company_name, self.company_code)
+                        self.finished.emit({
+                            'success': False,
+                            'error': '需要输入收件人手机尾号验证',
+                            'need_verification': True,
+                            'tracking_num': self.tracking_num,
+                            'company_code': self.company_code
+                        })
+                        return
+                    else:
+                        self.finished.emit({
+                            'success': False,
+                            'error': '验证码错误，请重新输入正确的手机尾号',
+                            'need_verification': True,
+                            'verification_failed': True,
+                            'tracking_num': self.tracking_num,
+                            'company_code': self.company_code
+                        })
+                        return
+                
+                status_code = result.get('status', '')  # 注意：这里获取的是API返回的status字段
+                message = result.get('message', '')
+                
+                # ========== 修复点：正确判断成功状态 ==========
+                # 快递100免费接口的 status 字段：
+                # '200' - 查询成功
+                # '0' 或 '201' - 单号不存在或暂无轨迹
+                # '400' - 参数错误
+                # 其他 - 各种错误
+                
+                if status_code == '200':
+                    # 查询成功
+                    converted_data = self._convert_free_api_result(result)
+                    self.finished.emit({
+                        'success': True,
+                        'data': converted_data,
+                        'quota_info': {'daily_limit': 0, 'remaining': 0, 'reset_time': '免费接口无限制'},
+                        'is_free_api': True
+                    })
+                elif status_code in ['0', '201']:
+                    # 单号可能存在但暂无轨迹
+                    converted_data = self._convert_free_api_result(result)
+                    self.finished.emit({
+                        'success': True,
+                        'data': converted_data,
+                        'quota_info': {'daily_limit': 0, 'remaining': 0, 'reset_time': '免费接口无限制'},
+                        'is_pending': True,
+                        'is_free_api': True
+                    })
+                elif status_code == '400':
+                    # 参数错误 - 可能是 company_code 为空或不正确
+                    error_detail = result.get('message', '参数错误')
+                    self.finished.emit({
+                        'success': False,
+                        'error': f'免费接口参数错误: {error_detail}。请确认已选择正确的快递公司。',
+                        'is_free_api': True
+                    })
+                else:
+                    # 其他错误
+                    error_msg = message or f'查询失败(status={status_code})'
+                    self.finished.emit({
+                        'success': False,
+                        'error': f'免费接口查询失败: {error_msg}',
+                        'is_free_api': True
+                    })
+            else:
+                self.finished.emit({
+                    'success': False,
+                    'error': f'免费接口请求失败: HTTP {response.status_code}',
+                    'is_free_api': True
+                })
+                
+        except requests.exceptions.Timeout:
+            self.finished.emit({'success': False, 'error': '免费接口请求超时', 'is_free_api': True})
+        except requests.exceptions.ConnectionError:
+            self.finished.emit({'success': False, 'error': '免费接口网络连接失败', 'is_free_api': True})
+        except Exception as e:
+            self.finished.emit({'success': False, 'error': f'免费接口异常: {str(e)}', 'is_free_api': True})
+    
+    def _get_company_name(self, company_code: str) -> str:
+        """根据公司代码获取公司名称"""
+        company_map = {
+            'shunfeng': '顺丰速运',
+            'yuantong': '圆通速递',
+            'zhongtong': '中通快递',
+            'yunda': '韵达快递',
+            'shentong': '申通快递',
+            'jd': '京东物流',
+            'ems': 'EMS',
+            'jtexpress': '极兔速递',
+            'huitongkuaidi': '百世快递',
+            'youzhengguo': '中国邮政',
+        }
+        return company_map.get(company_code, company_code or '未知')
+        
+    def _query_with_custom_api(self):
+        """使用自定义API查询（备用）"""
+        # 简单的GET请求，用于自定义接口
+        url = self.endpoint.get('url', '')
+        if not url:
+            self.finished.emit({'success': False, 'error': '未配置API地址'})
+            return
+        
+        params = {
+            'com': self.company_code,
+            'num': self.tracking_num
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            if response.status_code == 200:
+                result = response.json()
+                # 尝试转换为标准格式
+                converted_data = self._try_convert_custom_result(result)
+                self.finished.emit({'success': True, 'data': converted_data})
+            else:
+                self.finished.emit({'success': False, 'error': f'请求失败: HTTP {response.status_code}'})
+        except Exception as e:
+            self.finished.emit({'success': False, 'error': str(e)})
+    
+    def _auto_detect_company(self, tracking_num: str) -> str:
+        """自动识别快递公司"""
+        try:
+            # 使用快递100的自动识别接口
+            detect_url = 'https://www.kuaidi100.com/autonumber/auto'
+            params = {'num': tracking_num}
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            
+            response = requests.get(detect_url, params=params, headers=headers, timeout=5)
+            if response.status_code == 200:
+                result = response.json()
+                if result and len(result) > 0:
+                    return result[0].get('comCode', '')
+        except:
+            pass
+        
+        # 如果自动识别失败，使用本地规则
+        company_map = {
+            'SF': 'shunfeng',
+            'YT': 'yuantong',
+            'ZT': 'zhongtong',
+            'YD': 'yunda',
+            'ST': 'shentong',
+            'JD': 'jd',
+            'JT': 'jtexpress',
+        }
+        
+        tracking_upper = tracking_num.upper()
+        for prefix, code in company_map.items():
+            if tracking_upper.startswith(prefix):
+                return code
+        
+        return ''
+    
+    def _convert_free_api_result(self, free_result: dict) -> dict:
+        """将免费接口返回结果转换为标准格式"""
+        # 免费接口返回格式示例：
+        # {
+        #   "status": "200",
+        #   "message": "ok",
+        #   "data": [{"time": "...", "context": "..."}],
+        #   "state": 3,
+        #   "ischeck": "1"
+        # }
+        
+        converted = {
+            'nu': self.tracking_num,
+            'com': self.company_code,
+            'state': str(free_result.get('state', '0')),
+            'data': free_result.get('data', []),
+            'message': free_result.get('message', ''),
+            'ischeck': free_result.get('ischeck', '0'),
+            'updateTime': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # 确保 data 中的每条记录都有 time 和 context
+        for track in converted['data']:
+            if 'time' not in track:
+                track['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if 'context' not in track:
+                track['context'] = '物流信息更新中'
+        
+        return converted
+    
+    def _try_convert_custom_result(self, custom_result: dict) -> dict:
+        """尝试将自定义接口结果转换为标准格式"""
+        # 如果已经是标准格式，直接返回
+        if 'nu' in custom_result and 'data' in custom_result:
+            return custom_result
+        
+        # 尝试自动适配
+        converted = {
+            'nu': self.tracking_num,
+            'com': self.company_code,
+            'state': '0',
+            'data': [],
+            'message': ''
+        }
+        
+        # 尝试从不同字段名获取
+        if 'number' in custom_result:
+            converted['nu'] = custom_result['number']
+        if 'company' in custom_result:
+            converted['com'] = custom_result['company']
+        if 'status' in custom_result:
+            converted['state'] = str(custom_result.get('status', '0'))
+        if 'track' in custom_result:
+            converted['data'] = custom_result['track']
+        if 'info' in custom_result:
+            converted['message'] = custom_result['info']
+        
+        return converted
+
+    def _extract_quota_info(self, headers: Dict) -> Dict:
         """从响应头提取配额信息"""
         quota_info = {
             'daily_limit': 0,
@@ -4666,6 +5776,8 @@ class ExpressQueryThreadPro(QThread):
             quota_info['remaining'] = 99
             
         return quota_info
+
+
 
 
 class BatchRefreshThread(QThread):
@@ -4850,7 +5962,7 @@ class ExpressItemWidget(QWidget):
         """应用条目样式"""
         # 根据状态设置不同的背景色
         category = self.express_data.get('status_category', 'other')
-        state = self.express_data.get('status', '')
+        # state = self.express_data.get('status', '')
         
         # 根据分类设置不同的边框颜色
         category_colors = {
@@ -4971,6 +6083,12 @@ class ExpressItemWidget(QWidget):
         refresh_btn.clicked.connect(self.on_refresh_click)
         btn_layout.addWidget(refresh_btn)
         
+        move_btn = QPushButton("移动")
+        move_btn.setToolTip("移动到其他分类")
+        move_btn.setFixedSize(50, 30)
+        move_btn.clicked.connect(self.on_move_click)
+        btn_layout.addWidget(move_btn)
+        
         delete_btn = QPushButton("删除")
         delete_btn.setToolTip("删除")
         delete_btn.setFixedSize(50, 30)
@@ -4991,6 +6109,7 @@ class ExpressItemWidget(QWidget):
         tracking_num = self.express_data.get('tracking_number', '')
         company_name = self.express_data.get('company_name', '')
         status = self.express_data.get('status', '')
+        current_dest = self.express_data.get('dest_address', '')
         
         # 复制快递单号
         copy_num_action = menu.addAction(f"📋 复制单号: {tracking_num}")
@@ -5003,6 +6122,52 @@ class ExpressItemWidget(QWidget):
         # 复制状态
         copy_status_action = menu.addAction(f"📊 复制状态: {status}")
         copy_status_action.triggered.connect(lambda: self.copy_to_clipboard(status, "状态"))
+        
+        menu.addSeparator()
+        
+        # ========== 设置最终收件地址 ==========
+        dest_menu = menu.addMenu("📮 设置收件地址")
+        
+        set_dest_action = dest_menu.addAction("✏️ 自定义收件地址...")
+        set_dest_action.triggered.connect(self.set_destination_address)
+        
+        # 从物流轨迹中智能选择
+        if self.express_data.get('result_data'):
+            auto_dest_menu = dest_menu.addMenu("📍 从轨迹中选择")
+            try:
+                full_data = json.loads(self.express_data['result_data'])
+                track_list = full_data.get('data', [])
+                
+                sites = set()
+                if self.parent_gui and self.parent_gui.node_analyzer:
+                    nodes = self.parent_gui.node_analyzer.extract_nodes_from_track(track_list)
+                    for node in nodes:
+                        if node.get('site_name'):
+                            sites.add(node['site_name'])
+                        if node.get('city'):
+                            sites.add(node['city'])
+                
+                # 添加最终签收站点（如果有）
+                for track in track_list:
+                    context = track.get('context', '')
+                    if '签收' in context or '已收' in context:
+                        site_match = re.search(r'【([^】]+)】', context)
+                        if site_match:
+                            sites.add(site_match.group(1))
+                        break
+                
+                for site in sorted(sites)[:10]:
+                    if site:
+                        action = auto_dest_menu.addAction(site)
+                        action.triggered.connect(lambda checked, s=site: self.set_destination_address_from_site(s))
+            except:
+                pass
+        
+        if current_dest:
+            dest_menu.addSeparator()
+            dest_menu.addAction(f"当前地址: {current_dest}").setEnabled(False)
+            clear_dest_action = dest_menu.addAction("🗑️ 清除收件地址")
+            clear_dest_action.triggered.connect(self.clear_destination_address)
         
         menu.addSeparator()
         
@@ -5089,10 +6254,12 @@ class ExpressItemWidget(QWidget):
         remark = self.express_data.get('remark', '')
         latest_track = self.express_data.get('latest_track', '')
         last_update = self.express_data.get('last_update', '')
+        dest_address = self.express_data.get('dest_address', '')
         
         full_info = f"""快递单号: {tracking_num}
     快递公司: {company_name}
     当前状态: {status}
+    收件地址: {dest_address if dest_address else '未设置'}
     备注: {remark if remark else '无'}
     最新物流: {latest_track if latest_track else '暂无'}
     最后更新: {last_update}"""
@@ -5124,7 +6291,48 @@ class ExpressItemWidget(QWidget):
             # 使用快递100搜索
             url = f"https://www.kuaidi100.com/all/{tracking_num}.shtml"
             webbrowser.open(url)
+    
+    # ========== 收件地址相关方法 ==========
+    def set_destination_address(self):
+        """设置自定义收件地址"""
+        from PySide6.QtWidgets import QInputDialog
         
+        current = self.express_data.get('dest_address', '')
+        address, ok = QInputDialog.getText(
+            self, "设置收件地址",
+            "请输入最终收件地址（城市名或具体站点）：",
+            QLineEdit.Normal,
+            current
+        )
+        
+        if ok and address.strip():
+            self.save_destination_address(address.strip())
+
+    def set_destination_address_from_site(self, site: str):
+        """从轨迹中选择收件地址"""
+        self.save_destination_address(site)
+
+    def clear_destination_address(self):
+        """清除收件地址"""
+        self.save_destination_address("")
+
+    def save_destination_address(self, address: str):
+        """保存收件地址到数据库"""
+        if self.parent_gui and self.parent_gui.user_manager.current_user_db:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            sql = "UPDATE express_summary SET dest_address = ?, last_update = ? WHERE id = ?"
+            self.parent_gui.user_manager.current_user_db.execute_update(
+                sql, (address, current_time, self.express_id)
+            )
+            self.express_data['dest_address'] = address
+            self.update_display()
+            
+            if self.parent_gui:
+                if address:
+                    self.parent_gui.status_bar.showMessage(f"✅ 已设置收件地址: {address}", 3000)
+                else:
+                    self.parent_gui.status_bar.showMessage("✅ 已清除收件地址", 2000)
+
     def update_display(self):
         """更新显示"""
         status_text = self.express_data.get('status', '未知')
@@ -5132,6 +6340,7 @@ class ExpressItemWidget(QWidget):
         company = self.express_data.get('company_name', '')
         last_update = self.express_data.get('last_update', '')
         created_at = self.express_data.get('created_at', '')
+        dest_address = self.express_data.get('dest_address', '')
         
         created_display = ""
         if created_at:
@@ -5155,41 +6364,79 @@ class ExpressItemWidget(QWidget):
             except:
                 update_display = f" | 更新: {last_update}"
     
-        # 获取预估时间
-        estimated_display = ""
-        if hasattr(self, 'parent_gui') and self.parent_gui and self.parent_gui.delivery_estimator:
+        # ========== 计算并显示预计送达时间 ==========
+        estimated_delivery_display = ""
+        if hasattr(self, 'parent_gui') and self.parent_gui:
             result_data = self.express_data.get('result_data', '')
             if result_data:
                 try:
                     full_data = json.loads(result_data)
                     state = str(full_data.get('state', ''))
+                    
                     if state != '3':  # 非签收状态才显示预估
-                        estimated_text = self.parent_gui.delivery_estimator.get_estimate_text(full_data)
-                        if estimated_text and estimated_text != "暂无预估信息":
-                            # 简化显示
-                            if '预计' in estimated_text:
-                                # 提取日期部分
-                                import re
-                                match = re.search(r'预计(\d+月\d+日)送达', estimated_text)
-                                if match:
-                                    estimated_display = f" | {match.group(0)}"
-                                else:
-                                    estimated_display = f" | {estimated_text[:20]}"
-                            elif '派件中' in estimated_text:
-                                estimated_display = " | 派件中"
-                            elif '已到达' in estimated_text:
-                                estimated_display = " | 待取件"
+                        target_dest = dest_address or self.express_data.get('dest_site', '')
+                        
+
+                        # 如果快递没有单独设置，尝试使用全局默认地址
+                        if not target_dest and self.parent_gui and hasattr(self.parent_gui, 'dest_address_manager'):
+                            global_default = self.parent_gui.dest_address_manager.get_default_address_text()
+                            if global_default:
+                                target_dest = global_default
+
+                        if target_dest and self.parent_gui.node_analyzer:
+                            estimate_info = self.parent_gui.node_analyzer.estimate_arrival_to_destination(
+                                full_data, target_dest
+                            )
+                            if estimate_info:
+                                hours = estimate_info.get('hours', 0)
+                                if hours > 0:
+                                    est_time = datetime.now() + timedelta(hours=hours)
+                                    estimated_delivery_display = f" | 🎯 预计 {est_time.strftime('%m-%d %H:%M')} 送达"
+                                    if estimate_info.get('confidence_level') == '低':
+                                        estimated_delivery_display += " (低置信度)"
+                                elif estimate_info.get('is_arrived'):
+                                    estimated_delivery_display = " | ✅ 已到达目标地址"
+                        else:
+                            if self.parent_gui.delivery_estimator:
+                                estimated_text = self.parent_gui.delivery_estimator.get_estimate_text(full_data)
+                                if estimated_text and estimated_text != "暂无预估信息":
+                                    import re
+                                    match = re.search(r'预计(\d+月\d+日)送达', estimated_text)
+                                    if match:
+                                        estimated_delivery_display = f" | {match.group(0)}"
+                                    elif '派件中' in estimated_text:
+                                        estimated_delivery_display = " | 派件中"
+                                    elif '已到达' in estimated_text:
+                                        estimated_delivery_display = " | 待取件"
                 except:
                     pass
 
-        self.status_label.setText(f"快递单号: {tracking_num} | {company} | {status_text}{created_display}{update_display}{estimated_display}")
+        # 构建状态标签文本
+        label_parts = [
+            f"快递单号: {tracking_num}",
+            company,
+            status_text
+        ]
+        if dest_address:
+            label_parts.append(f"📮 {dest_address[:20]}{'...' if len(dest_address) > 20 else ''}")
+        label_parts.append(f"{created_display}{update_display}{estimated_delivery_display}")
         
+        self.status_label.setText(" | ".join(label_parts))
+        
+        # 备注显示
         remark = self.express_data.get('remark', '')
         if remark:
             self.remark_btn.setText(f"备注: {remark}")
         else:
             self.remark_btn.setText("点击添加备注...")
-            
+        
+        # 如果有设置的收件地址，在备注按钮上显示提示
+        if dest_address:
+            self.remark_btn.setToolTip(f"📮 收件地址: {dest_address}")
+        else:
+            self.remark_btn.setToolTip("")
+        
+        # 物流轨迹显示
         latest_track = self.express_data.get('latest_track', '')
         if latest_track:
             display_track = latest_track[:60] + "..." if len(latest_track) > 60 else latest_track
@@ -5203,11 +6450,7 @@ class ExpressItemWidget(QWidget):
                 image_bytes = base64.b64decode(screenshot)
                 pixmap = QPixmap()
                 pixmap.loadFromData(image_bytes)
-                scaled_pixmap = pixmap.scaled(
-                    90, 90, 
-                    Qt.KeepAspectRatio, 
-                    Qt.SmoothTransformation
-                )
+                scaled_pixmap = pixmap.scaled(90, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.image_btn.setIcon(QIcon(scaled_pixmap))
                 self.image_btn.setIconSize(QSize(90, 90))
                 self.image_btn.setText("")
@@ -5329,7 +6572,7 @@ class ExpressItemWidget(QWidget):
     
     def add_screenshot_from_url(self):
         """从URL下载截图"""
-        from PySide6.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QInputDialog, QProgressDialog
         
         url, ok = QInputDialog.getText(
             self, "从URL下载", 
@@ -5523,9 +6766,10 @@ class ExpressItemWidget(QWidget):
         status = self.express_data.get('status', '')
         remark = self.express_data.get('remark', '')
         last_update = self.express_data.get('last_update', '')
+        dest_address = self.express_data.get('dest_address', '')
         
         # 计算新图片尺寸
-        info_height = 120
+        info_height = 140
         new_width = max(original_pixmap.width(), 400)
         new_height = original_pixmap.height() + info_height
         
@@ -5555,6 +6799,9 @@ class ExpressItemWidget(QWidget):
         y += 20
         painter.drawText(10, y, f"当前状态: {status}")
         y += 20
+        if dest_address:
+            painter.drawText(10, y, f"收件地址: {dest_address}")
+            y += 20
         if remark:
             painter.drawText(10, y, f"备注: {remark[:30]}{'...' if len(remark) > 30 else ''}")
             y += 20
@@ -5610,7 +6857,8 @@ class ExpressItemWidget(QWidget):
         """显示截图信息"""
         screenshot = self.express_data.get('screenshot', '')
         if not screenshot:
-            self.parent_gui.status_bar.showMessage("✅ 暂无截图", 3000)
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("ℹ️ 暂无截图", 2000)
             return
         
         try:
@@ -5686,7 +6934,8 @@ class ExpressItemWidget(QWidget):
                 pixmap = QPixmap.fromImage(image)
         
         if pixmap.isNull():
-            self.parent_gui.status_bar.showMessage("⚠️ 剪贴板中没有图片！", 3000)
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("⚠️ 剪贴板中没有图片！", 3000)
             return
             
         try:
@@ -5700,7 +6949,8 @@ class ExpressItemWidget(QWidget):
             self.screenshot_changed.emit(self.express_id, image_data)
             self.express_data['screenshot'] = image_data
             self.update_display()
-            self.parent_gui.status_bar.showMessage("✅ 截图已从剪贴板添加", 3000)
+            if hasattr(self, 'parent_gui') and self.parent_gui:
+                self.parent_gui.status_bar.showMessage("✅ 截图已从剪贴板添加", 3000)
         except Exception as e:
             QMessageBox.warning(self, "错误", f"处理剪贴板图片失败: {e}")
                 
@@ -5760,6 +7010,118 @@ class ExpressItemWidget(QWidget):
         else:
             self.apply_item_style()
 
+    def update_from_data(self, data: dict):
+        """根据新的物流数据更新自身状态"""
+        tracking_num = self.express_data.get('tracking_number', '')
+        
+        # 更新 result_data
+        self.express_data['result_data'] = json.dumps(data, ensure_ascii=False)
+        
+        # 更新状态
+        state = str(data.get('state', ''))
+        state_text = self.parent_gui.get_state_text(state) if self.parent_gui else ''
+        
+        track_list = data.get('data', [])
+        latest_track = ''
+        latest_context = ''
+        if track_list:
+            latest = track_list[0]
+            latest_track = f"[{latest.get('time', '')}] {latest.get('context', '')}"
+            latest_context = latest.get('context', '')
+        
+        category = self.parent_gui.get_state_category(state, latest_context) if self.parent_gui else 'other'
+        
+        # 更新 express_data
+        self.express_data['status'] = state_text
+        self.express_data['status_category'] = category
+        self.express_data['latest_track'] = latest_track
+        self.express_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 更新显示
+        self.update_display()
+        self.apply_item_style()
+        
+        # 如果分类变了，需要移动到对应的分类
+        return category
+
+    def on_move_click(self):
+        """点击移动按钮 - 弹出分类选择菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet(MacaronStyle.get_main_style())
+        
+        current_category = self.express_data.get('status_category', 'other')
+        
+        # 所有可用的分类
+        categories = [
+            ('signed', '✅ 已签收'),
+            ('arrived', '📍 已到驿站'),
+            ('delivering', '🚚 派件中'),
+            ('transit', '✈️ 在途中'),
+            ('picked', '📮 已揽收'),
+            ('pending', '⏳ 待揽件'),
+            ('problem', '⚠️ 疑难件'),
+            ('returned', '↩️ 退件'),
+            ('customs', '🛃 清关中'),
+            ('other', '📦 其他')
+        ]
+        
+        for key, name in categories:
+            action = menu.addAction(name)
+            if key == current_category:
+                action.setEnabled(False)
+                action.setText(f"{name} (当前)")
+            else:
+                action.triggered.connect(lambda checked, k=key: self.move_to_category(k))
+        
+        # 在按钮下方显示菜单
+        move_btn = self.sender()
+        if move_btn:
+            menu.exec(move_btn.mapToGlobal(move_btn.rect().bottomLeft()))
+        else:
+            menu.exec(QCursor.pos())
+    
+    def move_to_category(self, target_category: str):
+        """移动到指定分类"""
+        if self.parent_gui:
+            tracking_num = self.express_data.get('tracking_number', '')
+            old_category = self.express_data.get('status_category', 'other')
+            
+            # 更新数据库
+            if self.parent_gui.user_manager.current_user_db:
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                sql = """
+                UPDATE express_summary 
+                SET status_category = ?, last_update = ? 
+                WHERE id = ? AND is_deleted = 0
+                """
+                self.parent_gui.user_manager.current_user_db.execute_update(
+                    sql, (target_category, current_time, self.express_id)
+                )
+            
+            # 更新本地数据
+            self.express_data['status_category'] = target_category
+            self.express_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 从旧分类移除
+            if old_category in self.parent_gui.category_widgets:
+                self.parent_gui.category_widgets[old_category].remove_express_item(self)
+            
+            # 添加到新分类
+            # 需要重新创建 widget 或者直接移动
+            # 这里采用从数据库重新加载该条记录的方式
+            if self.parent_gui.user_manager.current_user_db:
+                sql_new = "SELECT * FROM express_summary WHERE id = ? AND is_deleted = 0"
+                new_record = self.parent_gui.user_manager.current_user_db.execute_query(sql_new, (self.express_id,))
+                if new_record:
+                    self.parent_gui.add_express_to_category(new_record[0])
+            
+            # 更新分类计数
+            for w in self.parent_gui.category_widgets.values():
+                w.update_count()
+            
+            self.parent_gui.status_bar.showMessage(
+                f"✅ {tracking_num} 已移动到新分类", 3000
+            )
 
 
 
@@ -5831,6 +7193,802 @@ class RemarkEditDialog(QDialog):
 class ExpressDetailDialog(QDialog):
     """快递详情对话框"""
     
+    # 城市坐标缓存（静态坐标库）- 完整版
+    CITY_COORDINATES = {
+        # 直辖市
+        '北京': (39.9042, 116.4074), '北京市': (39.9042, 116.4074),
+        '上海': (31.2304, 121.4737), '上海市': (31.2304, 121.4737),
+        '天津': (39.0842, 117.2009), '天津市': (39.0842, 117.2009),
+        '重庆': (29.5630, 106.5516), '重庆市': (29.5630, 106.5516),
+        
+        # 广东省
+        '广州': (23.1291, 113.2644), '广州市': (23.1291, 113.2644),
+        '深圳': (22.5431, 114.0579), '深圳市': (22.5431, 114.0579),
+        '珠海': (22.2707, 113.5767), '珠海市': (22.2707, 113.5767),
+        '佛山': (23.0215, 113.1214), '佛山市': (23.0215, 113.1214),
+        '东莞': (23.0207, 113.7518), '东莞市': (23.0207, 113.7518),
+        '惠州': (23.1118, 114.4158), '惠州市': (23.1118, 114.4158),
+        '中山': (22.5159, 113.3926), '中山市': (22.5159, 113.3926),
+        '江门': (22.5787, 113.0819), '江门市': (22.5787, 113.0819),
+        '湛江': (21.2707, 110.3594), '湛江市': (21.2707, 110.3594),
+        '茂名': (21.6630, 110.9252), '茂名市': (21.6630, 110.9252),
+        '肇庆': (23.0473, 112.4650), '肇庆市': (23.0473, 112.4650),
+        '汕头': (23.3535, 116.6820), '汕头市': (23.3535, 116.6820),
+        '潮州': (23.6567, 116.6226), '潮州市': (23.6567, 116.6226),
+        '揭阳': (23.5497, 116.3727), '揭阳市': (23.5497, 116.3727),
+        '汕尾': (22.7857, 115.3754), '汕尾市': (22.7857, 115.3754),
+        '梅州': (24.2886, 116.1225), '梅州市': (24.2886, 116.1225),
+        '河源': (23.7437, 114.7004), '河源市': (23.7437, 114.7004),
+        '清远': (23.6820, 113.0560), '清远市': (23.6820, 113.0560),
+        '韶关': (24.8104, 113.5976), '韶关市': (24.8104, 113.5976),
+        '阳江': (21.8582, 111.9826), '阳江市': (21.8582, 111.9826),
+        '云浮': (22.9152, 112.0445), '云浮市': (22.9152, 112.0445),
+        
+        # 江苏省
+        '南京': (32.0603, 118.7969), '南京市': (32.0603, 118.7969),
+        '苏州': (31.2990, 120.5853), '苏州市': (31.2990, 120.5853),
+        '无锡': (31.4912, 120.3119), '无锡市': (31.4912, 120.3119),
+        '常州': (31.8101, 119.9736), '常州市': (31.8101, 119.9736),
+        '南通': (31.9796, 120.8937), '南通市': (31.9796, 120.8937),
+        '扬州': (32.3936, 119.4129), '扬州市': (32.3936, 119.4129),
+        '镇江': (32.1896, 119.4250), '镇江市': (32.1896, 119.4250),
+        '徐州': (34.2048, 117.2848), '徐州市': (34.2048, 117.2848),
+        '盐城': (33.3495, 120.1616), '盐城市': (33.3495, 120.1616),
+        '淮安': (33.6101, 119.0153), '淮安市': (33.6101, 119.0153),
+        '连云港': (34.5967, 119.2216), '连云港市': (34.5967, 119.2216),
+        '泰州': (32.4555, 119.9255), '泰州市': (32.4555, 119.9255),
+        '宿迁': (33.9619, 118.2755), '宿迁市': (33.9619, 118.2755),
+        '昆山': (31.3846, 120.9817), '昆山市': (31.3846, 120.9817),
+        '江阴': (31.9211, 120.2849), '江阴市': (31.9211, 120.2849),
+        '宜兴': (31.3406, 119.8233), '宜兴市': (31.3406, 119.8233),
+        '常熟': (31.6538, 120.7525), '常熟市': (31.6538, 120.7525),
+        '张家港': (31.8754, 120.5556), '张家港市': (31.8754, 120.5556),
+        '太仓': (31.4590, 121.1300), '太仓市': (31.4590, 121.1300),
+        
+        # 浙江省
+        '杭州': (30.2741, 120.1551), '杭州市': (30.2741, 120.1551),
+        '宁波': (29.8683, 121.5440), '宁波市': (29.8683, 121.5440),
+        '温州': (27.9943, 120.6994), '温州市': (27.9943, 120.6994),
+        '绍兴': (30.0303, 120.5802), '绍兴市': (30.0303, 120.5802),
+        '嘉兴': (30.7460, 120.7555), '嘉兴市': (30.7460, 120.7555),
+        '金华': (29.0781, 119.6474), '金华市': (29.0781, 119.6474),
+        '台州': (28.6561, 121.4206), '台州市': (28.6561, 121.4206),
+        '湖州': (30.8930, 120.0868), '湖州市': (30.8930, 120.0868),
+        '衢州': (28.9359, 118.8595), '衢州市': (28.9359, 118.8595),
+        '丽水': (28.4672, 119.9229), '丽水市': (28.4672, 119.9229),
+        '舟山': (29.9853, 122.2078), '舟山市': (29.9853, 122.2078),
+        '义乌': (29.3057, 120.0751), '义乌市': (29.3057, 120.0751),
+        '慈溪': (30.1697, 121.2665), '慈溪市': (30.1697, 121.2665),
+        '余姚': (30.0372, 121.1546), '余姚市': (30.0372, 121.1546),
+        
+        # 福建省
+        '福州': (26.0745, 119.2965), '福州市': (26.0745, 119.2965),
+        '厦门': (24.4798, 118.0894), '厦门市': (24.4798, 118.0894),
+        '泉州': (24.8741, 118.6759), '泉州市': (24.8741, 118.6759),
+        '漳州': (24.5130, 117.6475), '漳州市': (24.5130, 117.6475),
+        '莆田': (25.4540, 119.0077), '莆田市': (25.4540, 119.0077),
+        '龙岩': (25.0751, 117.0172), '龙岩市': (25.0751, 117.0172),
+        '三明': (26.2638, 117.6392), '三明市': (26.2638, 117.6392),
+        '南平': (26.6417, 118.1785), '南平市': (26.6417, 118.1785),
+        '宁德': (26.6657, 119.5482), '宁德市': (26.6657, 119.5482),
+        '晋江': (24.7817, 118.5524), '晋江市': (24.7817, 118.5524),
+        '福清': (25.7202, 119.3842), '福清市': (25.7202, 119.3842),
+        
+        # 山东省
+        '济南': (36.6512, 117.1201), '济南市': (36.6512, 117.1201),
+        '青岛': (36.0671, 120.3826), '青岛市': (36.0671, 120.3826),
+        '烟台': (37.4635, 121.4479), '烟台市': (37.4635, 121.4479),
+        '威海': (37.5131, 122.1204), '威海市': (37.5131, 122.1204),
+        '潍坊': (36.7068, 119.1618), '潍坊市': (36.7068, 119.1618),
+        '淄博': (36.8131, 118.0548), '淄博市': (36.8131, 118.0548),
+        '临沂': (35.1047, 118.3565), '临沂市': (35.1047, 118.3565),
+        '济宁': (35.4146, 116.5872), '济宁市': (35.4146, 116.5872),
+        '泰安': (36.2000, 117.0876), '泰安市': (36.2000, 117.0876),
+        '聊城': (36.4570, 115.9854), '聊城市': (36.4570, 115.9854),
+        '德州': (37.4355, 116.3593), '德州市': (37.4355, 116.3593),
+        '滨州': (37.3821, 117.9728), '滨州市': (37.3821, 117.9728),
+        '东营': (37.4337, 118.6747), '东营市': (37.4337, 118.6747),
+        '菏泽': (35.2336, 115.4807), '菏泽市': (35.2336, 115.4807),
+        '日照': (35.4164, 119.5271), '日照市': (35.4164, 119.5271),
+        '枣庄': (34.8105, 117.3237), '枣庄市': (34.8105, 117.3237),
+        
+        # 河南省
+        '郑州': (34.7472, 113.6253), '郑州市': (34.7472, 113.6253),
+        '洛阳': (34.6197, 112.4539), '洛阳市': (34.6197, 112.4539),
+        '南阳': (32.9908, 112.5283), '南阳市': (32.9908, 112.5283),
+        '许昌': (34.0357, 113.8523), '许昌市': (34.0357, 113.8523),
+        '周口': (33.6258, 114.6970), '周口市': (33.6258, 114.6970),
+        '新乡': (35.3030, 113.9268), '新乡市': (35.3030, 113.9268),
+        '商丘': (34.4143, 115.6564), '商丘市': (34.4143, 115.6564),
+        '驻马店': (33.0114, 114.0223), '驻马店市': (33.0114, 114.0223),
+        '信阳': (32.1473, 114.0910), '信阳市': (32.1473, 114.0910),
+        '开封': (34.7975, 114.3076), '开封市': (34.7975, 114.3076),
+        '平顶山': (33.7662, 113.1924), '平顶山市': (33.7662, 113.1924),
+        '安阳': (36.0977, 114.3924), '安阳市': (36.0977, 114.3924),
+        '焦作': (35.2159, 113.2420), '焦作市': (35.2159, 113.2420),
+        '濮阳': (35.7618, 115.0292), '濮阳市': (35.7618, 115.0292),
+        '漯河': (33.5815, 114.0165), '漯河市': (33.5815, 114.0165),
+        '三门峡': (34.7726, 111.2003), '三门峡市': (34.7726, 111.2003),
+        '鹤壁': (35.7472, 114.2973), '鹤壁市': (35.7472, 114.2973),
+        
+        # 河北省
+        '石家庄': (38.0428, 114.5149), '石家庄市': (38.0428, 114.5149),
+        '唐山': (39.6305, 118.1802), '唐山市': (39.6305, 118.1802),
+        '邯郸': (36.6256, 114.5390), '邯郸市': (36.6256, 114.5390),
+        '保定': (38.8739, 115.4648), '保定市': (38.8739, 115.4648),
+        '沧州': (38.3045, 116.8387), '沧州市': (38.3045, 116.8387),
+        '邢台': (37.0706, 114.5048), '邢台市': (37.0706, 114.5048),
+        '廊坊': (39.5378, 116.6838), '廊坊市': (39.5378, 116.6838),
+        '张家口': (40.7675, 114.8863), '张家口市': (40.7675, 114.8863),
+        '承德': (40.9515, 117.9624), '承德市': (40.9515, 117.9624),
+        '秦皇岛': (39.9355, 119.6005), '秦皇岛市': (39.9355, 119.6005),
+        '衡水': (37.7389, 115.6702), '衡水市': (37.7389, 115.6702),
+        
+        # 湖北省
+        '武汉': (30.5928, 114.3055), '武汉市': (30.5928, 114.3055),
+        '襄阳': (32.0090, 112.1224), '襄阳市': (32.0090, 112.1224),
+        '宜昌': (30.6908, 111.2865), '宜昌市': (30.6908, 111.2865),
+        '荆州': (30.3348, 112.2397), '荆州市': (30.3348, 112.2397),
+        '黄冈': (30.4537, 114.8724), '黄冈市': (30.4537, 114.8724),
+        '孝感': (30.9248, 113.9169), '孝感市': (30.9248, 113.9169),
+        '十堰': (32.6292, 110.7980), '十堰市': (32.6292, 110.7980),
+        '荆门': (31.0355, 112.1994), '荆门市': (31.0355, 112.1994),
+        '黄石': (30.1995, 115.0388), '黄石市': (30.1995, 115.0388),
+        '咸宁': (29.8414, 114.3225), '咸宁市': (29.8414, 114.3225),
+        '随州': (31.6901, 113.3826), '随州市': (31.6901, 113.3826),
+        '鄂州': (30.3909, 114.8949), '鄂州市': (30.3909, 114.8949),
+        '恩施': (30.2831, 109.4882), '恩施市': (30.2831, 109.4882),
+        
+        # 湖南省
+        '长沙': (28.2282, 112.9388), '长沙市': (28.2282, 112.9388),
+        '株洲': (27.8277, 113.1339), '株洲市': (27.8277, 113.1339),
+        '湘潭': (27.8297, 112.9441), '湘潭市': (27.8297, 112.9441),
+        '衡阳': (26.8932, 112.5720), '衡阳市': (26.8932, 112.5720),
+        '邵阳': (27.2389, 111.4677), '邵阳市': (27.2389, 111.4677),
+        '岳阳': (29.3573, 113.1290), '岳阳市': (29.3573, 113.1290),
+        '常德': (29.0316, 111.6985), '常德市': (29.0316, 111.6985),
+        '张家界': (29.1167, 110.4783), '张家界市': (29.1167, 110.4783),
+        '益阳': (28.5539, 112.3550), '益阳市': (28.5539, 112.3550),
+        '郴州': (25.7706, 113.0148), '郴州市': (25.7706, 113.0148),
+        '永州': (26.4203, 111.6134), '永州市': (26.4203, 111.6134),
+        '怀化': (27.5695, 110.0016), '怀化市': (27.5695, 110.0016),
+        '娄底': (27.6973, 111.9945), '娄底市': (27.6973, 111.9945),
+        
+        # 四川省
+        '成都': (30.5728, 104.0668), '成都市': (30.5728, 104.0668),
+        '绵阳': (31.4675, 104.6791), '绵阳市': (31.4675, 104.6791),
+        '德阳': (31.1269, 104.3979), '德阳市': (31.1269, 104.3979),
+        '宜宾': (28.7513, 104.6433), '宜宾市': (28.7513, 104.6433),
+        '南充': (30.8378, 106.1107), '南充市': (30.8378, 106.1107),
+        '泸州': (28.8718, 105.4423), '泸州市': (28.8718, 105.4423),
+        '达州': (31.2086, 107.4679), '达州市': (31.2086, 107.4679),
+        '乐山': (29.5521, 103.7656), '乐山市': (29.5521, 103.7656),
+        '内江': (29.5802, 105.0584), '内江市': (29.5802, 105.0584),
+        '自贡': (29.3392, 104.7784), '自贡市': (29.3392, 104.7784),
+        '攀枝花': (26.5823, 101.7186), '攀枝花市': (26.5823, 101.7186),
+        '眉山': (30.0756, 103.8485), '眉山市': (30.0756, 103.8485),
+        '遂宁': (30.5328, 105.5927), '遂宁市': (30.5328, 105.5927),
+        '广安': (30.4559, 106.6332), '广安市': (30.4559, 106.6332),
+        '巴中': (31.8672, 106.7475), '巴中市': (31.8672, 106.7475),
+        '资阳': (30.1289, 104.6276), '资阳市': (30.1289, 104.6276),
+        '雅安': (29.9805, 103.0133), '雅安市': (29.9805, 103.0133),
+        '广元': (32.4355, 105.8436), '广元市': (32.4355, 105.8436),
+        
+        # 陕西省
+        '西安': (34.3416, 108.9398), '西安市': (34.3416, 108.9398),
+        '宝鸡': (34.3619, 107.2377), '宝鸡市': (34.3619, 107.2377),
+        '咸阳': (34.3293, 108.7093), '咸阳市': (34.3293, 108.7093),
+        '渭南': (34.4996, 109.5098), '渭南市': (34.4996, 109.5098),
+        '汉中': (33.0676, 107.0238), '汉中市': (33.0676, 107.0238),
+        '榆林': (38.2852, 109.7346), '榆林市': (38.2852, 109.7346),
+        '安康': (32.6847, 109.0290), '安康市': (32.6847, 109.0290),
+        '商洛': (33.8727, 109.9184), '商洛市': (33.8727, 109.9184),
+        '延安': (36.5855, 109.4898), '延安市': (36.5855, 109.4898),
+        '铜川': (34.8967, 108.9451), '铜川市': (34.8967, 108.9451),
+        
+        # 辽宁省
+        '沈阳': (41.8057, 123.4315), '沈阳市': (41.8057, 123.4315),
+        '大连': (38.9140, 121.6147), '大连市': (38.9140, 121.6147),
+        '鞍山': (41.1078, 122.9946), '鞍山市': (41.1078, 122.9946),
+        '抚顺': (41.8809, 123.9572), '抚顺市': (41.8809, 123.9572),
+        '本溪': (41.2941, 123.7665), '本溪市': (41.2941, 123.7665),
+        '丹东': (40.0008, 124.3547), '丹东市': (40.0008, 124.3547),
+        '锦州': (41.0951, 121.1270), '锦州市': (41.0951, 121.1270),
+        '营口': (40.6668, 122.2352), '营口市': (40.6668, 122.2352),
+        '阜新': (42.0216, 121.6701), '阜新市': (42.0216, 121.6701),
+        '辽阳': (41.2681, 123.2374), '辽阳市': (41.2681, 123.2374),
+        '盘锦': (41.1199, 122.0708), '盘锦市': (41.1199, 122.0708),
+        '铁岭': (42.2862, 123.8425), '铁岭市': (42.2862, 123.8425),
+        '朝阳': (41.5734, 120.4508), '朝阳市': (41.5734, 120.4508),
+        '葫芦岛': (40.7110, 120.8370), '葫芦岛市': (40.7110, 120.8370),
+        
+        # 吉林省
+        '长春': (43.8171, 125.3235), '长春市': (43.8171, 125.3235),
+        '吉林': (43.8378, 126.5495), '吉林市': (43.8378, 126.5495),
+        '四平': (43.1665, 124.3504), '四平市': (43.1665, 124.3504),
+        '辽源': (42.8880, 125.1436), '辽源市': (42.8880, 125.1436),
+        '通化': (41.7283, 125.9399), '通化市': (41.7283, 125.9399),
+        '白山': (41.9408, 126.4147), '白山市': (41.9408, 126.4147),
+        '松原': (45.1411, 124.8251), '松原市': (45.1411, 124.8251),
+        '白城': (45.6196, 122.8390), '白城市': (45.6196, 122.8390),
+        '延吉': (42.8911, 129.5090), '延吉市': (42.8911, 129.5090),
+        
+        # 黑龙江省
+        '哈尔滨': (45.8038, 126.5350), '哈尔滨市': (45.8038, 126.5350),
+        '齐齐哈尔': (47.3543, 123.9182), '齐齐哈尔市': (47.3543, 123.9182),
+        '鸡西': (45.2951, 130.9693), '鸡西市': (45.2951, 130.9693),
+        '鹤岗': (47.3499, 130.2980), '鹤岗市': (47.3499, 130.2980),
+        '双鸭山': (46.6466, 131.1591), '双鸭山市': (46.6466, 131.1591),
+        '大庆': (46.5876, 125.1031), '大庆市': (46.5876, 125.1031),
+        '伊春': (47.7275, 128.8412), '伊春市': (47.7275, 128.8412),
+        '佳木斯': (46.7998, 130.3189), '佳木斯市': (46.7998, 130.3189),
+        '七台河': (45.7713, 131.0031), '七台河市': (45.7713, 131.0031),
+        '牡丹江': (44.5527, 129.6324), '牡丹江市': (44.5527, 129.6324),
+        '黑河': (50.2452, 127.5285), '黑河市': (50.2452, 127.5285),
+        '绥化': (46.6538, 126.9693), '绥化市': (46.6538, 126.9693),
+        
+        # 安徽省
+        '合肥': (31.8206, 117.2272), '合肥市': (31.8206, 117.2272),
+        '芜湖': (31.3526, 118.4329), '芜湖市': (31.3526, 118.4329),
+        '蚌埠': (32.9155, 117.3893), '蚌埠市': (32.9155, 117.3893),
+        '淮南': (32.6255, 116.9998), '淮南市': (32.6255, 116.9998),
+        '马鞍山': (31.6707, 118.5061), '马鞍山市': (31.6707, 118.5061),
+        '淮北': (33.9548, 116.7983), '淮北市': (33.9548, 116.7983),
+        '铜陵': (30.9446, 117.8115), '铜陵市': (30.9446, 117.8115),
+        '安庆': (30.5429, 117.0636), '安庆市': (30.5429, 117.0636),
+        '黄山': (29.7152, 118.3375), '黄山市': (29.7152, 118.3375),
+        '滁州': (32.3018, 118.3168), '滁州市': (32.3018, 118.3168),
+        '阜阳': (32.8896, 115.8149), '阜阳市': (32.8896, 115.8149),
+        '宿州': (33.6476, 116.9642), '宿州市': (33.6476, 116.9642),
+        '六安': (31.7349, 116.5219), '六安市': (31.7349, 116.5219),
+        '亳州': (33.8446, 115.7793), '亳州市': (33.8446, 115.7793),
+        '池州': (30.6647, 117.4914), '池州市': (30.6647, 117.4914),
+        '宣城': (30.9407, 118.7588), '宣城市': (30.9407, 118.7588),
+        
+        # 江西省
+        '南昌': (28.6820, 115.8579), '南昌市': (28.6820, 115.8579),
+        '景德镇': (29.2687, 117.1784), '景德镇市': (29.2687, 117.1784),
+        '萍乡': (27.6228, 113.8546), '萍乡市': (27.6228, 113.8546),
+        '九江': (29.7051, 116.0019), '九江市': (29.7051, 116.0019),
+        '新余': (27.8178, 114.9173), '新余市': (27.8178, 114.9173),
+        '鹰潭': (28.2602, 117.0692), '鹰潭市': (28.2602, 117.0692),
+        '赣州': (25.8310, 114.9348), '赣州市': (25.8310, 114.9348),
+        '吉安': (27.1138, 114.9929), '吉安市': (27.1138, 114.9929),
+        '宜春': (27.8144, 114.4168), '宜春市': (27.8144, 114.4168),
+        '抚州': (27.9492, 116.3581), '抚州市': (27.9492, 116.3581),
+        '上饶': (28.4549, 117.9436), '上饶市': (28.4549, 117.9436),
+        
+        # 贵州省
+        '贵阳': (26.6477, 106.6302), '贵阳市': (26.6477, 106.6302),
+        '遵义': (27.7257, 106.9272), '遵义市': (27.7257, 106.9272),
+        '六盘水': (26.5925, 104.8303), '六盘水市': (26.5925, 104.8303),
+        '安顺': (26.2531, 105.9462), '安顺市': (26.2531, 105.9462),
+        '毕节': (27.2985, 105.3050), '毕节市': (27.2985, 105.3050),
+        '铜仁': (27.7315, 109.1896), '铜仁市': (27.7315, 109.1896),
+        
+        # 云南省
+        '昆明': (24.8801, 102.8329), '昆明市': (24.8801, 102.8329),
+        '曲靖': (25.4900, 103.7962), '曲靖市': (25.4900, 103.7962),
+        '玉溪': (24.3518, 102.5466), '玉溪市': (24.3518, 102.5466),
+        '保山': (25.1120, 99.1618), '保山市': (25.1120, 99.1618),
+        '昭通': (27.3382, 103.7168), '昭通市': (27.3382, 103.7168),
+        '丽江': (26.8567, 100.2271), '丽江市': (26.8567, 100.2271),
+        '普洱': (22.8252, 100.9665), '普洱市': (22.8252, 100.9665),
+        '临沧': (23.8842, 100.0888), '临沧市': (23.8842, 100.0888),
+        '大理': (25.6065, 100.2676), '大理市': (25.6065, 100.2676),
+        
+        # 甘肃省
+        '兰州': (36.0611, 103.8343), '兰州市': (36.0611, 103.8343),
+        '嘉峪关': (39.7720, 98.2892), '嘉峪关市': (39.7720, 98.2892),
+        '金昌': (38.5201, 102.1880), '金昌市': (38.5201, 102.1880),
+        '白银': (36.5447, 104.1386), '白银市': (36.5447, 104.1386),
+        '天水': (34.5809, 105.7249), '天水市': (34.5809, 105.7249),
+        '武威': (37.9282, 102.6380), '武威市': (37.9282, 102.6380),
+        '张掖': (38.9259, 100.4498), '张掖市': (38.9259, 100.4498),
+        '平凉': (35.5430, 106.6653), '平凉市': (35.5430, 106.6653),
+        '酒泉': (39.7329, 98.4940), '酒泉市': (39.7329, 98.4940),
+        '庆阳': (35.7098, 107.6436), '庆阳市': (35.7098, 107.6436),
+        '定西': (35.5806, 104.6250), '定西市': (35.5806, 104.6250),
+        '陇南': (33.4010, 104.9218), '陇南市': (33.4010, 104.9218),
+        
+        # 内蒙古自治区
+        '呼和浩特': (40.8426, 111.7490), '呼和浩特市': (40.8426, 111.7490),
+        '包头': (40.6582, 109.8404), '包头市': (40.6582, 109.8404),
+        '乌海': (39.6538, 106.7955), '乌海市': (39.6538, 106.7955),
+        '赤峰': (42.2586, 118.8889), '赤峰市': (42.2586, 118.8889),
+        '通辽': (43.6529, 122.2437), '通辽市': (43.6529, 122.2437),
+        '鄂尔多斯': (39.6085, 109.7813), '鄂尔多斯市': (39.6085, 109.7813),
+        '呼伦贝尔': (49.2116, 119.7658), '呼伦贝尔市': (49.2116, 119.7658),
+        '巴彦淖尔': (40.7432, 107.3877), '巴彦淖尔市': (40.7432, 107.3877),
+        '乌兰察布': (40.9948, 113.1338), '乌兰察布市': (40.9948, 113.1338),
+        
+        # 广西壮族自治区
+        '南宁': (22.8170, 108.3665), '南宁市': (22.8170, 108.3665),
+        '柳州': (24.3264, 109.4286), '柳州市': (24.3264, 109.4286),
+        '桂林': (25.2736, 110.2900), '桂林市': (25.2736, 110.2900),
+        '梧州': (23.4769, 111.2792), '梧州市': (23.4769, 111.2792),
+        '北海': (21.4733, 109.1202), '北海市': (21.4733, 109.1202),
+        '防城港': (21.6869, 108.3547), '防城港市': (21.6869, 108.3547),
+        '钦州': (21.9809, 108.6543), '钦州市': (21.9809, 108.6543),
+        '贵港': (23.1115, 109.5989), '贵港市': (23.1115, 109.5989),
+        '玉林': (22.6545, 110.1810), '玉林市': (22.6545, 110.1810),
+        '百色': (23.9022, 106.6184), '百色市': (23.9022, 106.6184),
+        '贺州': (24.4035, 111.5667), '贺州市': (24.4035, 111.5667),
+        '河池': (24.6929, 108.0854), '河池市': (24.6929, 108.0854),
+        '来宾': (23.7502, 109.2215), '来宾市': (23.7502, 109.2215),
+        '崇左': (22.3789, 107.3650), '崇左市': (22.3789, 107.3650),
+        
+        # 西藏自治区
+        '拉萨': (29.6469, 91.1172), '拉萨市': (29.6469, 91.1172),
+        '日喀则': (29.2670, 88.8812), '日喀则市': (29.2670, 88.8812),
+        '昌都': (31.1409, 97.1720), '昌都市': (31.1409, 97.1720),
+        '林芝': (29.6489, 94.3615), '林芝市': (29.6489, 94.3615),
+        '山南': (29.2371, 91.7731), '山南市': (29.2371, 91.7731),
+        '那曲': (31.4762, 92.0514), '那曲市': (31.4762, 92.0514),
+        
+        # 宁夏回族自治区
+        '银川': (38.4872, 106.2309), '银川市': (38.4872, 106.2309),
+        '石嘴山': (38.9841, 106.3842), '石嘴山市': (38.9841, 106.3842),
+        '吴忠': (37.9975, 106.1984), '吴忠市': (37.9975, 106.1984),
+        '固原': (36.0158, 106.2426), '固原市': (36.0158, 106.2426),
+        '中卫': (37.5003, 105.1968), '中卫市': (37.5003, 105.1968),
+        
+        # 新疆维吾尔自治区
+        '乌鲁木齐': (43.8256, 87.6168), '乌鲁木齐市': (43.8256, 87.6168),
+        '克拉玛依': (45.5799, 84.8892), '克拉玛依市': (45.5799, 84.8892),
+        '吐鲁番': (42.9513, 89.1895), '吐鲁番市': (42.9513, 89.1895),
+        '哈密': (42.8185, 93.5149), '哈密市': (42.8185, 93.5149),
+        '昌吉': (44.0112, 87.2675), '昌吉市': (44.0112, 87.2675),
+        '伊宁': (43.9168, 81.3241), '伊宁市': (43.9168, 81.3241),
+        '喀什': (39.4677, 75.9897), '喀什市': (39.4677, 75.9897),
+        '和田': (37.1140, 79.9225), '和田市': (37.1140, 79.9225),
+        
+        # 海南省
+        '海口': (20.0174, 110.3492), '海口市': (20.0174, 110.3492),
+        '三亚': (18.2528, 109.5119), '三亚市': (18.2528, 109.5119),
+        '三沙': (16.8310, 112.3333), '三沙市': (16.8310, 112.3333),
+        '儋州': (19.5209, 109.5807), '儋州市': (19.5209, 109.5807),
+        '琼海': (19.2591, 110.4746), '琼海市': (19.2591, 110.4746),
+        '文昌': (19.5433, 110.7977), '文昌市': (19.5433, 110.7977),
+        '万宁': (18.7953, 110.3910), '万宁市': (18.7953, 110.3910),
+        '东方': (19.1020, 108.6537), '东方市': (19.1020, 108.6537),
+        
+        # 青海省
+        '西宁': (36.6171, 101.7785), '西宁市': (36.6171, 101.7785),
+        '海东': (36.5020, 102.4017), '海东市': (36.5020, 102.4017),
+        '格尔木': (36.4029, 94.9030), '格尔木市': (36.4029, 94.9030),
+        '德令哈': (37.3698, 97.3610), '德令哈市': (37.3698, 97.3610),
+        
+        # 台湾省
+        '台北': (25.0330, 121.5654), '台北市': (25.0330, 121.5654),
+        '新北': (25.0120, 121.4657), '新北市': (25.0120, 121.4657),
+        '桃园': (24.9936, 121.3010), '桃园市': (24.9936, 121.3010),
+        '台中': (24.1477, 120.6736), '台中市': (24.1477, 120.6736),
+        '台南': (22.9999, 120.2269), '台南市': (22.9999, 120.2269),
+        '高雄': (22.6273, 120.3014), '高雄市': (22.6273, 120.3014),
+        '基隆': (25.1283, 121.7419), '基隆市': (25.1283, 121.7419),
+        '新竹': (24.8067, 120.9688), '新竹市': (24.8067, 120.9688),
+        '嘉义': (23.4800, 120.4491), '嘉义市': (23.4800, 120.4491),
+        
+        # 香港特别行政区
+        '香港': (22.3193, 114.1694),
+        
+        # 澳门特别行政区
+        '澳门': (22.1987, 113.5439),
+    }
+
+    # 站点关键词到城市的映射 - 完整版
+    SITE_CITY_PATTERNS = {
+        # 直辖市
+        '北京': ['北京', '京', '北平', '燕京'],
+        '上海': ['上海', '沪', '申城', '魔都'],
+        '天津': ['天津', '津', '津门'],
+        '重庆': ['重庆', '渝', '山城', '巴渝'],
+        
+        # 广东省
+        '广州': ['广州', '穗', '广东广州', '羊城', '花城', '番禺', '天河', '白云'],
+        '深圳': ['深圳', '深', '鹏城', '宝安', '龙岗', '福田', '南山', '罗湖'],
+        '珠海': ['珠海', '香洲', '斗门', '金湾'],
+        '佛山': ['佛山', '禅城', '南海', '顺德', '高明', '三水'],
+        '东莞': ['东莞', '莞城', '虎门', '长安', '厚街'],
+        '惠州': ['惠州', '惠城', '惠阳', '博罗', '惠东', '龙门'],
+        '中山': ['中山', '石岐', '小榄', '古镇'],
+        '江门': ['江门', '蓬江', '江海', '新会', '台山', '开平', '鹤山', '恩平'],
+        '湛江': ['湛江', '赤坎', '霞山', '坡头', '麻章', '雷州', '廉江', '吴川', '遂溪', '徐闻'],
+        '茂名': ['茂名', '茂南', '电白', '高州', '化州', '信宜'],
+        '肇庆': ['肇庆', '端州', '鼎湖', '高要', '四会', '广宁', '怀集', '封开', '德庆'],
+        '汕头': ['汕头', '龙湖', '金平', '濠江', '潮阳', '潮南', '澄海', '南澳'],
+        '潮州': ['潮州', '湘桥', '潮安', '饶平'],
+        '揭阳': ['揭阳', '榕城', '揭东', '揭西', '惠来', '普宁'],
+        '汕尾': ['汕尾', '海丰', '陆河', '陆丰'],
+        '梅州': ['梅州', '梅江', '梅县', '大埔', '丰顺', '五华', '平远', '蕉岭', '兴宁'],
+        '河源': ['河源', '源城', '紫金', '龙川', '连平', '和平', '东源'],
+        '清远': ['清远', '清城', '清新', '佛冈', '阳山', '连山', '连南', '英德', '连州'],
+        '韶关': ['韶关', '武江', '浈江', '曲江', '始兴', '仁化', '翁源', '乳源', '新丰', '乐昌', '南雄'],
+        '阳江': ['阳江', '江城', '阳东', '阳西', '阳春'],
+        '云浮': ['云浮', '云城', '云安', '新兴', '郁南', '罗定'],
+        
+        # 江苏省
+        '南京': ['南京', '宁', '江苏南京', '金陵', '江宁', '溧水', '高淳', '六合', '浦口', '栖霞', '鼓楼', '建邺', '秦淮'],
+        '苏州': ['苏州', '苏', '姑苏', '吴中', '相城', '虎丘', '吴江', '常熟', '张家港', '昆山', '太仓'],
+        '无锡': ['无锡', '锡', '梁溪', '锡山', '惠山', '滨湖', '新吴', '江阴', '宜兴'],
+        '常州': ['常州', '常', '天宁', '钟楼', '新北', '武进', '金坛', '溧阳'],
+        '南通': ['南通', '通', '崇川', '港闸', '通州', '海安', '如东', '启东', '如皋', '海门'],
+        '扬州': ['扬州', '扬', '广陵', '邗江', '江都', '宝应', '仪征', '高邮'],
+        '镇江': ['镇江', '镇', '京口', '润州', '丹徒', '丹阳', '扬中', '句容'],
+        '徐州': ['徐州', '徐', '鼓楼', '云龙', '贾汪', '泉山', '铜山', '丰县', '沛县', '睢宁', '新沂', '邳州'],
+        '盐城': ['盐城', '盐', '亭湖', '盐都', '大丰', '响水', '滨海', '阜宁', '射阳', '建湖', '东台'],
+        '淮安': ['淮安', '淮', '清江浦', '淮安', '淮阴', '洪泽', '涟水', '盱眙', '金湖'],
+        '连云港': ['连云港', '连', '连云', '海州', '赣榆', '东海', '灌云', '灌南'],
+        '泰州': ['泰州', '泰', '海陵', '高港', '姜堰', '兴化', '靖江', '泰兴'],
+        '宿迁': ['宿迁', '宿', '宿城', '宿豫', '沭阳', '泗阳', '泗洪'],
+        
+        # 浙江省
+        '杭州': ['杭州', '杭', '浙江杭州', '上城', '下城', '江干', '拱墅', '西湖', '滨江', '萧山', '余杭', '富阳', '临安', '桐庐', '淳安', '建德'],
+        '宁波': ['宁波', '甬', '海曙', '江北', '北仑', '镇海', '鄞州', '奉化', '象山', '宁海', '余姚', '慈溪'],
+        '温州': ['温州', '温', '鹿城', '龙湾', '瓯海', '洞头', '永嘉', '平阳', '苍南', '文成', '泰顺', '瑞安', '乐清', '龙港'],
+        '绍兴': ['绍兴', '绍', '越城', '柯桥', '上虞', '新昌', '诸暨', '嵊州'],
+        '嘉兴': ['嘉兴', '嘉', '南湖', '秀洲', '嘉善', '海盐', '海宁', '平湖', '桐乡'],
+        '金华': ['金华', '金', '婺城', '金东', '武义', '浦江', '磐安', '兰溪', '义乌', '东阳', '永康'],
+        '台州': ['台州', '台', '椒江', '黄岩', '路桥', '三门', '天台', '仙居', '温岭', '临海', '玉环'],
+        '湖州': ['湖州', '湖', '吴兴', '南浔', '德清', '长兴', '安吉'],
+        '衢州': ['衢州', '衢', '柯城', '衢江', '常山', '开化', '龙游', '江山'],
+        '丽水': ['丽水', '丽', '莲都', '青田', '缙云', '遂昌', '松阳', '云和', '庆元', '景宁', '龙泉'],
+        '舟山': ['舟山', '舟', '定海', '普陀', '岱山', '嵊泗'],
+        
+        # 福建省
+        '福州': ['福州', '榕', '福建福州', '鼓楼', '台江', '仓山', '马尾', '晋安', '长乐', '闽侯', '连江', '罗源', '闽清', '永泰', '平潭', '福清'],
+        '厦门': ['厦门', '厦', '鹭岛', '思明', '湖里', '集美', '同安', '翔安'],
+        '泉州': ['泉州', '泉', '鲤城', '丰泽', '洛江', '泉港', '惠安', '安溪', '永春', '德化', '金门', '石狮', '晋江', '南安'],
+        '漳州': ['漳州', '漳', '芗城', '龙文', '云霄', '漳浦', '诏安', '长泰', '东山', '南靖', '平和', '华安', '龙海'],
+        '莆田': ['莆田', '莆', '城厢', '涵江', '荔城', '秀屿', '仙游'],
+        '龙岩': ['龙岩', '岩', '新罗', '永定', '长汀', '上杭', '武平', '连城', '漳平'],
+        '三明': ['三明', '明', '梅列', '三元', '明溪', '清流', '宁化', '大田', '尤溪', '沙县', '将乐', '泰宁', '建宁', '永安'],
+        '南平': ['南平', '南', '延平', '建阳', '顺昌', '浦城', '光泽', '松溪', '政和', '邵武', '武夷山', '建瓯'],
+        '宁德': ['宁德', '宁', '蕉城', '霞浦', '古田', '屏南', '寿宁', '周宁', '柘荣', '福安', '福鼎'],
+        
+        # 山东省
+        '济南': ['济南', '济', '山东济南', '历下', '市中', '槐荫', '天桥', '历城', '长清', '章丘', '济阳', '莱芜', '钢城', '平阴', '商河'],
+        '青岛': ['青岛', '青', '市南', '市北', '黄岛', '崂山', '李沧', '城阳', '即墨', '胶州', '平度', '莱西'],
+        '烟台': ['烟台', '烟', '芝罘', '福山', '牟平', '莱山', '长岛', '龙口', '莱阳', '莱州', '蓬莱', '招远', '栖霞', '海阳'],
+        '威海': ['威海', '威', '环翠', '文登', '荣成', '乳山'],
+        '潍坊': ['潍坊', '潍', '潍城', '寒亭', '坊子', '奎文', '临朐', '昌乐', '青州', '诸城', '寿光', '安丘', '高密', '昌邑'],
+        '淄博': ['淄博', '淄', '淄川', '张店', '博山', '临淄', '周村', '桓台', '高青', '沂源'],
+        '临沂': ['临沂', '临', '兰山', '罗庄', '河东', '沂南', '郯城', '沂水', '兰陵', '费县', '平邑', '莒南', '蒙阴', '临沭'],
+        '济宁': ['济宁', '任城', '兖州', '微山', '鱼台', '金乡', '嘉祥', '汶上', '泗水', '梁山', '曲阜', '邹城'],
+        '泰安': ['泰安', '泰', '泰山', '岱岳', '宁阳', '东平', '新泰', '肥城'],
+        '聊城': ['聊城', '聊', '东昌府', '茌平', '阳谷', '莘县', '东阿', '冠县', '高唐', '临清'],
+        '德州': ['德州', '德', '德城', '陵城', '宁津', '庆云', '临邑', '齐河', '平原', '夏津', '武城', '乐陵', '禹城'],
+        '滨州': ['滨州', '滨', '滨城', '沾化', '惠民', '阳信', '无棣', '博兴', '邹平'],
+        '东营': ['东营', '东', '东营区', '河口', '垦利', '利津', '广饶'],
+        '菏泽': ['菏泽', '菏', '牡丹', '定陶', '曹县', '单县', '成武', '巨野', '郓城', '鄄城', '东明'],
+        '日照': ['日照', '日', '东港', '岚山', '五莲', '莒县'],
+        '枣庄': ['枣庄', '枣', '市中', '薛城', '峄城', '台儿庄', '山亭', '滕州'],
+        
+        # 河南省
+        '郑州': ['郑州', '郑', '河南郑州', '中原', '二七', '管城', '金水', '上街', '惠济', '中牟', '巩义', '荥阳', '新密', '新郑', '登封'],
+        '洛阳': ['洛阳', '洛', '老城', '西工', '瀍河', '涧西', '吉利', '洛龙', '孟津', '新安', '栾川', '嵩县', '汝阳', '宜阳', '洛宁', '伊川', '偃师'],
+        '南阳': ['南阳', '宛', '卧龙', '宛城', '南召', '方城', '西峡', '镇平', '内乡', '淅川', '社旗', '唐河', '新野', '桐柏', '邓州'],
+        '许昌': ['许昌', '许', '魏都', '建安', '鄢陵', '襄城', '禹州', '长葛'],
+        '周口': ['周口', '周', '川汇', '淮阳', '扶沟', '西华', '商水', '沈丘', '郸城', '太康', '鹿邑', '项城'],
+        '新乡': ['新乡', '新', '红旗', '卫滨', '凤泉', '牧野', '新乡县', '获嘉', '原阳', '延津', '封丘', '长垣', '卫辉', '辉县'],
+        '商丘': ['商丘', '商', '梁园', '睢阳', '民权', '睢县', '宁陵', '柘城', '虞城', '夏邑', '永城'],
+        '驻马店': ['驻马店', '驻', '驿城', '西平', '上蔡', '平舆', '正阳', '确山', '泌阳', '汝南', '遂平', '新蔡'],
+        '信阳': ['信阳', '信', '浉河', '平桥', '罗山', '光山', '新县', '商城', '固始', '潢川', '淮滨', '息县'],
+        '开封': ['开封', '汴', '龙亭', '顺河', '鼓楼', '禹王台', '祥符', '杞县', '通许', '尉氏', '兰考'],
+        '平顶山': ['平顶山', '平', '新华', '卫东', '石龙', '湛河', '宝丰', '叶县', '鲁山', '郏县', '舞钢', '汝州'],
+        '安阳': ['安阳', '安', '文峰', '北关', '殷都', '龙安', '安阳县', '汤阴', '滑县', '内黄', '林州'],
+        '焦作': ['焦作', '焦', '解放', '中站', '马村', '山阳', '修武', '博爱', '武陟', '温县', '沁阳', '孟州'],
+        '濮阳': ['濮阳', '濮', '华龙', '清丰', '南乐', '范县', '台前', '濮阳县'],
+        '漯河': ['漯河', '漯', '源汇', '郾城', '召陵', '舞阳', '临颍'],
+        '三门峡': ['三门峡', '峡', '湖滨', '陕州', '渑池', '卢氏', '义马', '灵宝'],
+        '鹤壁': ['鹤壁', '鹤', '鹤山', '山城', '淇滨', '浚县', '淇县'],
+        
+        # 河北省
+        '石家庄': ['石家庄', '石', '河北石家庄', '长安', '桥西', '新华', '井陉', '裕华', '藁城', '鹿泉', '栾城', '井陉县', '正定', '行唐', '灵寿', '高邑', '深泽', '赞皇', '无极', '平山', '元氏', '赵县', '辛集', '晋州', '新乐'],
+        '唐山': ['唐山', '唐', '路南', '路北', '古冶', '开平', '丰南', '丰润', '曹妃甸', '滦南', '乐亭', '迁西', '玉田', '遵化', '迁安', '滦州'],
+        '邯郸': ['邯郸', '邯', '邯山', '丛台', '复兴', '峰峰', '肥乡', '永年', '临漳', '成安', '大名', '涉县', '磁县', '邱县', '鸡泽', '广平', '馆陶', '魏县', '曲周', '武安'],
+        '保定': ['保定', '保', '竞秀', '莲池', '满城', '清苑', '徐水', '涞水', '阜平', '定兴', '唐县', '高阳', '容城', '涞源', '望都', '安新', '易县', '曲阳', '蠡县', '顺平', '博野', '雄县', '涿州', '定州', '安国', '高碑店'],
+        '沧州': ['沧州', '沧', '新华', '运河', '沧县', '青县', '东光', '海兴', '盐山', '肃宁', '南皮', '吴桥', '献县', '孟村', '泊头', '任丘', '黄骅', '河间'],
+        '邢台': ['邢台', '邢', '桥东', '桥西', '邢台县', '临城', '内丘', '柏乡', '隆尧', '任县', '南和', '宁晋', '巨鹿', '新河', '广宗', '平乡', '威县', '清河', '临西', '南宫', '沙河'],
+        '廊坊': ['廊坊', '廊', '安次', '广阳', '固安', '永清', '香河', '大城', '文安', '大厂', '霸州', '三河'],
+        '张家口': ['张家口', '张', '桥东', '桥西', '宣化', '下花园', '万全', '崇礼', '张北', '康保', '沽源', '尚义', '蔚县', '阳原', '怀安', '怀来', '涿鹿', '赤城'],
+        '承德': ['承德', '承', '双桥', '双滦', '鹰手营子', '承德县', '兴隆', '滦平', '隆化', '丰宁', '宽城', '围场', '平泉'],
+        '秦皇岛': ['秦皇岛', '秦', '海港', '山海关', '北戴河', '抚宁', '青龙', '昌黎', '卢龙'],
+        '衡水': ['衡水', '衡', '桃城', '冀州', '枣强', '武邑', '武强', '饶阳', '安平', '故城', '景县', '阜城', '深州'],
+        
+        # 湖北省
+        '武汉': ['武汉', '汉', '湖北武汉', '江岸', '江汉', '硚口', '汉阳', '武昌', '青山', '洪山', '东西湖', '汉南', '蔡甸', '江夏', '黄陂', '新洲'],
+        '襄阳': ['襄阳', '襄', '襄城', '樊城', '襄州', '南漳', '谷城', '保康', '老河口', '枣阳', '宜城'],
+        '宜昌': ['宜昌', '宜', '西陵', '伍家岗', '点军', '猇亭', '夷陵', '远安', '兴山', '秭归', '长阳', '五峰', '宜都', '当阳', '枝江'],
+        '荆州': ['荆州', '荆', '沙市', '荆州', '公安', '监利', '江陵', '石首', '洪湖', '松滋'],
+        '黄冈': ['黄冈', '黄', '黄州', '团风', '红安', '罗田', '英山', '浠水', '蕲春', '黄梅', '麻城', '武穴'],
+        '孝感': ['孝感', '孝', '孝南', '孝昌', '大悟', '云梦', '应城', '安陆', '汉川'],
+        '十堰': ['十堰', '十', '茅箭', '张湾', '郧阳', '郧西', '竹山', '竹溪', '房县', '丹江口'],
+        '荆门': ['荆门', '荆', '东宝', '掇刀', '沙洋', '钟祥', '京山'],
+        '黄石': ['黄石', '黄', '黄石港', '西塞山', '下陆', '铁山', '阳新', '大冶'],
+        '咸宁': ['咸宁', '咸', '咸安', '嘉鱼', '通城', '崇阳', '通山', '赤壁'],
+        '随州': ['随州', '随', '曾都', '随县', '广水'],
+        '鄂州': ['鄂州', '鄂', '梁子湖', '华容', '鄂城'],
+        '恩施': ['恩施', '恩', '恩施市', '利川', '建始', '巴东', '宣恩', '咸丰', '来凤', '鹤峰'],
+        
+        # 湖南省
+        '长沙': ['长沙', '长', '湖南长沙', '芙蓉', '天心', '岳麓', '开福', '雨花', '望城', '长沙县', '浏阳', '宁乡'],
+        '株洲': ['株洲', '株', '荷塘', '芦淞', '石峰', '天元', '渌口', '攸县', '茶陵', '炎陵', '醴陵'],
+        '湘潭': ['湘潭', '潭', '雨湖', '岳塘', '湘潭县', '湘乡', '韶山'],
+        '衡阳': ['衡阳', '衡', '珠晖', '雁峰', '石鼓', '蒸湘', '南岳', '衡阳县', '衡南', '衡山', '衡东', '祁东', '耒阳', '常宁'],
+        '邵阳': ['邵阳', '邵', '双清', '大祥', '北塔', '邵东', '新邵', '邵阳县', '隆回', '洞口', '绥宁', '新宁', '城步', '武冈'],
+        '岳阳': ['岳阳', '岳', '岳阳楼', '云溪', '君山', '岳阳县', '华容', '湘阴', '平江', '汨罗', '临湘'],
+        '常德': ['常德', '常', '武陵', '鼎城', '安乡', '汉寿', '澧县', '临澧', '桃源', '石门', '津市'],
+        '张家界': ['张家界', '张', '永定', '武陵源', '慈利', '桑植'],
+        '益阳': ['益阳', '益', '资阳', '赫山', '南县', '桃江', '安化', '沅江'],
+        '郴州': ['郴州', '郴', '北湖', '苏仙', '桂阳', '宜章', '永兴', '嘉禾', '临武', '汝城', '桂东', '安仁', '资兴'],
+        '永州': ['永州', '永', '零陵', '冷水滩', '祁阳', '东安', '双牌', '道县', '江永', '宁远', '蓝山', '新田', '江华'],
+        '怀化': ['怀化', '怀', '鹤城', '中方', '沅陵', '辰溪', '溆浦', '会同', '麻阳', '新晃', '芷江', '靖州', '通道', '洪江'],
+        '娄底': ['娄底', '娄', '娄星', '双峰', '新化', '冷水江', '涟源'],
+        
+        # 四川省
+        '成都': ['成都', '蓉', '四川成都', '锦江', '青羊', '金牛', '武侯', '成华', '龙泉驿', '青白江', '新都', '温江', '双流', '郫都', '金堂', '大邑', '蒲江', '新津', '都江堰', '彭州', '邛崃', '崇州', '简阳'],
+        '绵阳': ['绵阳', '绵', '涪城', '游仙', '安州', '三台', '盐亭', '梓潼', '北川', '平武', '江油'],
+        '德阳': ['德阳', '德', '旌阳', '罗江', '中江', '广汉', '什邡', '绵竹'],
+        '宜宾': ['宜宾', '宜', '翠屏', '南溪', '叙州', '江安', '长宁', '高县', '珙县', '筠连', '兴文', '屏山'],
+        '南充': ['南充', '南', '顺庆', '高坪', '嘉陵', '南部', '营山', '蓬安', '仪陇', '西充', '阆中'],
+        '泸州': ['泸州', '泸', '江阳', '纳溪', '龙马潭', '泸县', '合江', '叙永', '古蔺'],
+        '达州': ['达州', '达', '通川', '达川', '宣汉', '开江', '大竹', '渠县', '万源'],
+        '乐山': ['乐山', '乐', '市中', '沙湾', '五通桥', '金口河', '犍为', '井研', '夹江', '沐川', '峨边', '马边', '峨眉山'],
+        '内江': ['内江', '内', '市中', '东兴', '威远', '资中', '隆昌'],
+        '自贡': ['自贡', '自', '自流井', '贡井', '大安', '沿滩', '荣县', '富顺'],
+        '攀枝花': ['攀枝花', '攀', '东区', '西区', '仁和', '米易', '盐边'],
+        '眉山': ['眉山', '眉', '东坡', '彭山', '仁寿', '洪雅', '丹棱', '青神'],
+        '遂宁': ['遂宁', '遂', '船山', '安居', '蓬溪', '射洪', '大英'],
+        '广安': ['广安', '广', '广安区', '前锋', '岳池', '武胜', '邻水', '华蓥'],
+        '巴中': ['巴中', '巴', '巴州', '恩阳', '通江', '南江', '平昌'],
+        '资阳': ['资阳', '资', '雁江', '安岳', '乐至'],
+        '雅安': ['雅安', '雅', '雨城', '名山', '荥经', '汉源', '石棉', '天全', '芦山', '宝兴'],
+        '广元': ['广元', '元', '利州', '昭化', '朝天', '旺苍', '青川', '剑阁', '苍溪'],
+        
+        # 陕西省
+        '西安': ['西安', '镐', '陕西西安', '新城', '碑林', '莲湖', '灞桥', '未央', '雁塔', '阎良', '临潼', '长安', '高陵', '鄠邑', '蓝田', '周至'],
+        '宝鸡': ['宝鸡', '宝', '渭滨', '金台', '陈仓', '凤翔', '岐山', '扶风', '眉县', '陇县', '千阳', '麟游', '凤县', '太白'],
+        '咸阳': ['咸阳', '咸', '秦都', '杨陵', '渭城', '三原', '泾阳', '乾县', '礼泉', '永寿', '长武', '旬邑', '淳化', '武功', '兴平', '彬州'],
+        '渭南': ['渭南', '渭', '临渭', '华州', '潼关', '大荔', '合阳', '澄城', '蒲城', '白水', '富平', '韩城', '华阴'],
+        '汉中': ['汉中', '汉', '汉台', '南郑', '城固', '洋县', '西乡', '勉县', '宁强', '略阳', '镇巴', '留坝', '佛坪'],
+        '榆林': ['榆林', '榆', '榆阳', '横山', '府谷', '靖边', '定边', '绥德', '米脂', '佳县', '吴堡', '清涧', '子洲', '神木'],
+        '安康': ['安康', '安', '汉滨', '汉阴', '石泉', '宁陕', '紫阳', '岚皋', '平利', '镇坪', '旬阳', '白河'],
+        '商洛': ['商洛', '商', '商州', '洛南', '丹凤', '商南', '山阳', '镇安', '柞水'],
+        '延安': ['延安', '延', '宝塔', '安塞', '延长', '延川', '志丹', '吴起', '甘泉', '富县', '洛川', '宜川', '黄龙', '黄陵', '子长'],
+        '铜川': ['铜川', '铜', '王益', '印台', '耀州', '宜君'],
+        
+        # 辽宁省
+        '沈阳': ['沈阳', '沈', '辽宁沈阳', '和平', '沈河', '大东', '皇姑', '铁西', '苏家屯', '浑南', '沈北', '于洪', '辽中', '康平', '法库', '新民'],
+        '大连': ['大连', '大', '中山', '西岗', '沙河口', '甘井子', '旅顺口', '金州', '普兰店', '长海', '瓦房店', '庄河'],
+        '鞍山': ['鞍山', '鞍', '铁东', '铁西', '立山', '千山', '台安', '岫岩', '海城'],
+        '抚顺': ['抚顺', '抚', '新抚', '东洲', '望花', '顺城', '抚顺县', '新宾', '清原'],
+        '本溪': ['本溪', '本', '平山', '溪湖', '明山', '南芬', '本溪县', '桓仁'],
+        '丹东': ['丹东', '丹', '元宝', '振兴', '振安', '宽甸', '东港', '凤城'],
+        '锦州': ['锦州', '锦', '古塔', '凌河', '太和', '黑山', '义县', '凌海', '北镇'],
+        '营口': ['营口', '营', '站前', '西市', '鲅鱼圈', '老边', '盖州', '大石桥'],
+        '阜新': ['阜新', '阜', '海州', '新邱', '太平', '清河门', '细河', '阜新县', '彰武'],
+        '辽阳': ['辽阳', '辽', '白塔', '文圣', '宏伟', '弓长岭', '太子河', '辽阳县', '灯塔'],
+        '盘锦': ['盘锦', '盘', '双台子', '兴隆台', '大洼', '盘山'],
+        '铁岭': ['铁岭', '铁', '银州', '清河', '铁岭县', '西丰', '昌图', '调兵山', '开原'],
+        '朝阳': ['朝阳', '朝', '双塔', '龙城', '朝阳县', '建平', '喀左', '北票', '凌源'],
+        '葫芦岛': ['葫芦岛', '葫', '连山', '龙港', '南票', '绥中', '建昌', '兴城'],
+        
+        # 吉林省
+        '长春': ['长春', '春', '吉林长春', '南关', '宽城', '朝阳', '二道', '绿园', '双阳', '九台', '农安', '榆树', '德惠'],
+        '吉林': ['吉林', '吉', '昌邑', '龙潭', '船营', '丰满', '永吉', '蛟河', '桦甸', '舒兰', '磐石'],
+        '四平': ['四平', '四', '铁西', '铁东', '梨树', '伊通', '公主岭', '双辽'],
+        '辽源': ['辽源', '辽', '龙山', '西安', '东丰', '东辽'],
+        '通化': ['通化', '通', '东昌', '二道江', '通化县', '辉南', '柳河', '梅河口', '集安'],
+        '白山': ['白山', '白', '浑江', '江源', '抚松', '靖宇', '长白', '临江'],
+        '松原': ['松原', '松', '宁江', '前郭', '长岭', '乾安', '扶余'],
+        '白城': ['白城', '白', '洮北', '镇赉', '通榆', '洮南', '大安'],
+        '延边': ['延边', '延吉', '图们', '敦化', '珲春', '龙井', '和龙', '汪清', '安图'],
+        
+        # 黑龙江省
+        '哈尔滨': ['哈尔滨', '哈', '黑龙江哈尔滨', '道里', '南岗', '道外', '平房', '松北', '香坊', '呼兰', '阿城', '双城', '依兰', '方正', '宾县', '巴彦', '木兰', '通河', '延寿', '尚志', '五常'],
+        '齐齐哈尔': ['齐齐哈尔', '齐', '龙沙', '建华', '铁锋', '昂昂溪', '富拉尔基', '碾子山', '梅里斯', '龙江', '依安', '泰来', '甘南', '富裕', '克山', '克东', '拜泉', '讷河'],
+        '鸡西': ['鸡西', '鸡', '鸡冠', '恒山', '滴道', '梨树', '城子河', '麻山', '鸡东', '虎林', '密山'],
+        '鹤岗': ['鹤岗', '鹤', '向阳', '工农', '南山', '兴安', '东山', '兴山', '萝北', '绥滨'],
+        '双鸭山': ['双鸭山', '双', '尖山', '岭东', '四方台', '宝山', '集贤', '友谊', '宝清', '饶河'],
+        '大庆': ['大庆', '庆', '萨尔图', '龙凤', '让胡路', '红岗', '大同', '肇州', '肇源', '林甸', '杜尔伯特'],
+        '伊春': ['伊春', '伊', '伊美', '乌翠', '友好', '金林', '嘉荫', '汤旺', '丰林', '大箐山', '南岔', '铁力'],
+        '佳木斯': ['佳木斯', '佳', '向阳', '前进', '东风', '郊区', '桦南', '桦川', '汤原', '同江', '富锦', '抚远'],
+        '七台河': ['七台河', '七', '新兴', '桃山', '茄子河', '勃利'],
+        '牡丹江': ['牡丹江', '牡', '东安', '阳明', '爱民', '西安', '林口', '绥芬河', '海林', '宁安', '穆棱', '东宁'],
+        '黑河': ['黑河', '黑', '爱辉', '逊克', '孙吴', '北安', '五大连池', '嫩江'],
+        '绥化': ['绥化', '绥', '北林', '望奎', '兰西', '青冈', '庆安', '明水', '绥棱', '安达', '肇东', '海伦'],
+        
+        # 安徽省
+        '合肥': ['合肥', '合', '安徽合肥', '瑶海', '庐阳', '蜀山', '包河', '长丰', '肥东', '肥西', '庐江', '巢湖'],
+        '芜湖': ['芜湖', '芜', '镜湖', '弋江', '鸠江', '三山', '芜湖县', '繁昌', '南陵', '无为'],
+        '蚌埠': ['蚌埠', '蚌', '龙子湖', '蚌山', '禹会', '淮上', '怀远', '五河', '固镇'],
+        '淮南': ['淮南', '淮', '大通', '田家庵', '谢家集', '八公山', '潘集', '凤台', '寿县'],
+        '马鞍山': ['马鞍山', '马', '花山', '雨山', '博望', '当涂', '含山', '和县'],
+        '淮北': ['淮北', '淮', '杜集', '相山', '烈山', '濉溪'],
+        '铜陵': ['铜陵', '铜', '铜官', '义安', '郊区', '枞阳'],
+        '安庆': ['安庆', '安', '迎江', '大观', '宜秀', '怀宁', '太湖', '宿松', '望江', '岳西', '桐城', '潜山'],
+        '黄山': ['黄山', '黄', '屯溪', '黄山', '徽州', '歙县', '休宁', '黟县', '祁门'],
+        '滁州': ['滁州', '滁', '琅琊', '南谯', '来安', '全椒', '定远', '凤阳', '天长', '明光'],
+        '阜阳': ['阜阳', '阜', '颍州', '颍东', '颍泉', '临泉', '太和', '阜南', '颍上', '界首'],
+        '宿州': ['宿州', '宿', '埇桥', '砀山', '萧县', '灵璧', '泗县'],
+        '六安': ['六安', '六', '金安', '裕安', '叶集', '霍邱', '舒城', '金寨', '霍山'],
+        '亳州': ['亳州', '亳', '谯城', '涡阳', '蒙城', '利辛'],
+        '池州': ['池州', '池', '贵池', '东至', '石台', '青阳'],
+        '宣城': ['宣城', '宣', '宣州', '郎溪', '泾县', '绩溪', '旌德', '宁国', '广德'],
+        
+        # 江西省
+        '南昌': ['南昌', '洪', '江西南昌', '东湖', '西湖', '青云谱', '青山湖', '新建', '红谷滩', '南昌县', '安义', '进贤'],
+        '景德镇': ['景德镇', '景', '昌江', '珠山', '浮梁', '乐平'],
+        '萍乡': ['萍乡', '萍', '安源', '湘东', '莲花', '上栗', '芦溪'],
+        '九江': ['九江', '九', '濂溪', '浔阳', '柴桑', '武宁', '修水', '永修', '德安', '都昌', '湖口', '彭泽', '瑞昌', '共青城', '庐山'],
+        '新余': ['新余', '余', '渝水', '分宜'],
+        '鹰潭': ['鹰潭', '鹰', '月湖', '余江', '贵溪'],
+        '赣州': ['赣州', '赣', '章贡', '南康', '赣县', '信丰', '大余', '上犹', '崇义', '安远', '定南', '全南', '宁都', '于都', '兴国', '会昌', '寻乌', '石城', '瑞金', '龙南'],
+        '吉安': ['吉安', '吉', '吉州', '青原', '吉安县', '吉水', '峡江', '新干', '永丰', '泰和', '遂川', '万安', '安福', '永新', '井冈山'],
+        '宜春': ['宜春', '宜', '袁州', '奉新', '万载', '上高', '宜丰', '靖安', '铜鼓', '丰城', '樟树', '高安'],
+        '抚州': ['抚州', '抚', '临川', '东乡', '南城', '黎川', '南丰', '崇仁', '乐安', '宜黄', '金溪', '资溪', '广昌'],
+        '上饶': ['上饶', '饶', '信州', '广丰', '广信', '玉山', '铅山', '横峰', '弋阳', '余干', '鄱阳', '万年', '婺源', '德兴'],
+        
+        # 贵州省
+        '贵阳': ['贵阳', '筑', '贵州贵阳', '南明', '云岩', '花溪', '乌当', '白云', '观山湖', '开阳', '息烽', '修文', '清镇'],
+        '遵义': ['遵义', '遵', '红花岗', '汇川', '播州', '桐梓', '绥阳', '正安', '道真', '务川', '凤冈', '湄潭', '余庆', '习水', '赤水', '仁怀'],
+        '六盘水': ['六盘水', '六', '钟山', '六枝特', '水城', '盘州'],
+        '安顺': ['安顺', '安', '西秀', '平坝', '普定', '镇宁', '关岭', '紫云'],
+        '毕节': ['毕节', '毕', '七星关', '大方', '黔西', '金沙', '织金', '纳雍', '威宁', '赫章'],
+        '铜仁': ['铜仁', '铜', '碧江', '万山', '江口', '玉屏', '石阡', '思南', '印江', '德江', '沿河', '松桃'],
+        '黔东南': ['黔东南', '凯里', '黄平', '施秉', '三穗', '镇远', '岑巩', '天柱', '锦屏', '剑河', '台江', '黎平', '榕江', '从江', '雷山', '麻江', '丹寨'],
+        '黔南': ['黔南', '都匀', '福泉', '荔波', '贵定', '瓮安', '独山', '平塘', '罗甸', '长顺', '龙里', '惠水', '三都'],
+        '黔西南': ['黔西南', '兴义', '兴仁', '普安', '晴隆', '贞丰', '望谟', '册亨', '安龙'],
+        
+        # 云南省
+        '昆明': ['昆明', '昆', '云南昆明', '五华', '盘龙', '官渡', '西山', '东川', '呈贡', '晋宁', '富民', '宜良', '石林', '嵩明', '禄劝', '寻甸', '安宁'],
+        '曲靖': ['曲靖', '曲', '麒麟', '沾益', '马龙', '陆良', '师宗', '罗平', '富源', '会泽', '宣威'],
+        '玉溪': ['玉溪', '玉', '红塔', '江川', '通海', '华宁', '易门', '峨山', '新平', '元江', '澄江'],
+        '保山': ['保山', '保', '隆阳', '施甸', '龙陵', '昌宁', '腾冲'],
+        '昭通': ['昭通', '昭', '昭阳', '鲁甸', '巧家', '盐津', '大关', '永善', '绥江', '镇雄', '彝良', '威信', '水富'],
+        '丽江': ['丽江', '丽', '古城', '玉龙', '永胜', '华坪', '宁蒗'],
+        '普洱': ['普洱', '普', '思茅', '宁洱', '墨江', '景东', '景谷', '镇沅', '江城', '孟连', '澜沧', '西盟'],
+        '临沧': ['临沧', '临', '临翔', '凤庆', '云县', '永德', '镇康', '双江', '耿马', '沧源'],
+        '楚雄': ['楚雄', '楚', '楚雄市', '双柏', '牟定', '南华', '姚安', '大姚', '永仁', '元谋', '武定', '禄丰'],
+        '红河': ['红河', '蒙自', '个旧', '开远', '弥勒', '建水', '石屏', '泸西', '元阳', '红河县', '金平', '绿春', '河口', '屏边'],
+        '文山': ['文山', '文', '文山市', '砚山', '西畴', '麻栗坡', '马关', '丘北', '广南', '富宁'],
+        '西双版纳': ['西双版纳', '景洪', '勐海', '勐腊'],
+        '大理': ['大理', '大理市', '漾濞', '祥云', '宾川', '弥渡', '南涧', '巍山', '永平', '云龙', '洱源', '剑川', '鹤庆'],
+        '德宏': ['德宏', '芒市', '瑞丽', '梁河', '盈江', '陇川'],
+        '怒江': ['怒江', '泸水', '福贡', '贡山', '兰坪'],
+        '迪庆': ['迪庆', '香格里拉', '德钦', '维西'],
+        
+        # 甘肃省
+        '兰州': ['兰州', '兰', '甘肃兰州', '城关', '七里河', '西固', '安宁', '红古', '永登', '皋兰', '榆中'],
+        '嘉峪关': ['嘉峪关', '嘉'],
+        '金昌': ['金昌', '金', '金川', '永昌'],
+        '白银': ['白银', '白', '白银区', '平川', '靖远', '会宁', '景泰'],
+        '天水': ['天水', '天', '秦州', '麦积', '清水', '秦安', '甘谷', '武山', '张家川'],
+        '武威': ['武威', '武', '凉州', '民勤', '古浪', '天祝'],
+        '张掖': ['张掖', '张', '甘州', '肃南', '民乐', '临泽', '高台', '山丹'],
+        '平凉': ['平凉', '平', '崆峒', '泾川', '灵台', '崇信', '华亭', '庄浪', '静宁'],
+        '酒泉': ['酒泉', '酒', '肃州', '金塔', '瓜州', '肃北', '阿克塞', '玉门', '敦煌'],
+        '庆阳': ['庆阳', '庆', '西峰', '庆城', '环县', '华池', '合水', '正宁', '宁县', '镇原'],
+        '定西': ['定西', '定', '安定', '通渭', '陇西', '渭源', '临洮', '漳县', '岷县'],
+        '陇南': ['陇南', '陇', '武都', '成县', '文县', '宕昌', '康县', '西和', '礼县', '徽县', '两当'],
+        '临夏': ['临夏', '临夏市', '临夏县', '康乐', '永靖', '广河', '和政', '东乡', '积石山'],
+        '甘南': ['甘南', '合作', '临潭', '卓尼', '舟曲', '迭部', '玛曲', '碌曲', '夏河'],
+        
+        # 内蒙古自治区
+        '呼和浩特': ['呼和浩特', '呼', '新城', '回民', '玉泉', '赛罕', '土左旗', '托克托', '和林格尔', '清水河', '武川'],
+        '包头': ['包头', '包', '东河', '昆都仑', '青山', '石拐', '白云鄂博', '九原', '土右旗', '固阳', '达茂旗'],
+        '乌海': ['乌海', '乌', '海勃湾', '海南', '乌达'],
+        '赤峰': ['赤峰', '赤', '红山', '元宝山', '松山', '阿旗', '巴林左旗', '巴林右旗', '林西', '克旗', '翁旗', '喀旗', '宁城', '敖汉'],
+        '通辽': ['通辽', '通', '科尔沁', '科左中旗', '科左后旗', '开鲁', '库伦', '奈曼', '扎鲁特', '霍林郭勒'],
+        '鄂尔多斯': ['鄂尔多斯', '鄂', '东胜', '康巴什', '达拉特', '准格尔', '鄂前旗', '鄂旗', '杭锦旗', '乌审旗', '伊旗'],
+        '呼伦贝尔': ['呼伦贝尔', '呼伦', '海拉尔', '扎赉诺尔', '阿荣旗', '莫旗', '鄂伦春', '鄂温克', '陈旗', '新左旗', '新右旗', '满洲里', '牙克石', '扎兰屯', '额尔古纳', '根河'],
+        '巴彦淖尔': ['巴彦淖尔', '巴', '临河', '五原', '磴口', '乌拉特前旗', '乌拉特中旗', '乌拉特后旗', '杭锦后旗'],
+        '乌兰察布': ['乌兰察布', '乌', '集宁', '卓资', '化德', '商都', '兴和', '凉城', '察右前旗', '察右中旗', '察右后旗', '四子王旗', '丰镇'],
+        '兴安': ['兴安', '乌兰浩特', '阿尔山', '科右前旗', '科右中旗', '扎赉特', '突泉'],
+        '锡林郭勒': ['锡林郭勒', '锡林浩特', '二连浩特', '阿巴嘎', '苏尼特左旗', '苏尼特右旗', '东乌旗', '西乌旗', '太仆寺', '镶黄旗', '正镶白旗', '正蓝旗', '多伦'],
+        '阿拉善': ['阿拉善', '阿拉善左旗', '阿拉善右旗', '额济纳'],
+        
+        # 广西壮族自治区
+        '南宁': ['南宁', '邕', '广西南宁', '兴宁', '青秀', '江南', '西乡塘', '良庆', '邕宁', '武鸣', '隆安', '马山', '上林', '宾阳', '横县'],
+        '柳州': ['柳州', '柳', '城中', '鱼峰', '柳南', '柳北', '柳江', '柳城', '鹿寨', '融安', '融水', '三江'],
+        '桂林': ['桂林', '桂', '秀峰', '叠彩', '象山', '七星', '雁山', '临桂', '阳朔', '灵川', '全州', '兴安', '永福', '灌阳', '龙胜', '资源', '平乐', '恭城', '荔浦'],
+        '梧州': ['梧州', '梧', '万秀', '长洲', '龙圩', '苍梧', '藤县', '蒙山', '岑溪'],
+        '北海': ['北海', '北', '海城', '银海', '铁山港', '合浦'],
+        '防城港': ['防城港', '防', '港口', '防城', '上思', '东兴'],
+        '钦州': ['钦州', '钦', '钦南', '钦北', '灵山', '浦北'],
+        '贵港': ['贵港', '贵', '港北', '港南', '覃塘', '平南', '桂平'],
+        '玉林': ['玉林', '玉', '玉州', '福绵', '容县', '陆川', '博白', '兴业', '北流'],
+        '百色': ['百色', '百', '右江', '田阳', '田东', '平果', '德保', '那坡', '凌云', '乐业', '田林', '西林', '隆林', '靖西'],
+        '贺州': ['贺州', '贺', '八步', '平桂', '昭平', '钟山', '富川'],
+        '河池': ['河池', '河', '金城江', '宜州', '南丹', '天峨', '凤山', '东兰', '罗城', '环江', '巴马', '都安', '大化'],
+        '来宾': ['来宾', '来', '兴宾', '忻城', '象州', '武宣', '金秀', '合山'],
+        '崇左': ['崇左', '崇', '江州', '扶绥', '宁明', '龙州', '大新', '天等', '凭祥'],
+        
+        # 西藏自治区
+        '拉萨': ['拉萨', '拉', '城关', '堆龙德庆', '达孜', '林周', '当雄', '尼木', '曲水', '墨竹工卡'],
+        '日喀则': ['日喀则', '日', '桑珠孜', '南木林', '江孜', '定日', '萨迦', '拉孜', '昂仁', '谢通门', '白朗', '仁布', '康马', '定结', '仲巴', '亚东', '吉隆', '聂拉木', '萨嘎', '岗巴'],
+        '昌都': ['昌都', '昌', '卡若', '江达', '贡觉', '类乌齐', '丁青', '察雅', '八宿', '左贡', '芒康', '洛隆', '边坝'],
+        '林芝': ['林芝', '林', '巴宜', '工布江达', '米林', '墨脱', '波密', '察隅', '朗县'],
+        '山南': ['山南', '山', '乃东', '扎囊', '贡嘎', '桑日', '琼结', '曲松', '措美', '洛扎', '加查', '隆子', '错那', '浪卡子'],
+        '那曲': ['那曲', '那', '色尼', '嘉黎', '比如', '聂荣', '安多', '申扎', '索县', '班戈', '巴青', '尼玛', '双湖'],
+        '阿里': ['阿里', '普兰', '札达', '噶尔', '日土', '革吉', '改则', '措勤'],
+        
+        # 宁夏回族自治区
+        '银川': ['银川', '银', '宁夏银川', '兴庆', '西夏', '金凤', '永宁', '贺兰', '灵武'],
+        '石嘴山': ['石嘴山', '石', '大武口', '惠农', '平罗'],
+        '吴忠': ['吴忠', '吴', '利通', '红寺堡', '盐池', '同心', '青铜峡'],
+        '固原': ['固原', '固', '原州', '西吉', '隆德', '泾源', '彭阳'],
+        '中卫': ['中卫', '中', '沙坡头', '中宁', '海原'],
+        
+        # 新疆维吾尔自治区
+        '乌鲁木齐': ['乌鲁木齐', '乌', '新疆乌鲁木齐', '天山', '沙依巴克', '新市', '水磨沟', '头屯河', '达坂城', '米东', '乌鲁木齐县'],
+        '克拉玛依': ['克拉玛依', '克', '独山子', '克拉玛依区', '白碱滩', '乌尔禾'],
+        '吐鲁番': ['吐鲁番', '吐', '高昌', '鄯善', '托克逊'],
+        '哈密': ['哈密', '哈', '伊州', '巴里坤', '伊吾'],
+        '昌吉': ['昌吉', '昌', '昌吉市', '阜康', '呼图壁', '玛纳斯', '奇台', '吉木萨尔', '木垒'],
+        '博尔塔拉': ['博尔塔拉', '博乐', '阿拉山口', '精河', '温泉'],
+        '巴音郭楞': ['巴音郭楞', '库尔勒', '轮台', '尉犁', '若羌', '且末', '焉耆', '和静', '和硕', '博湖'],
+        '阿克苏': ['阿克苏', '阿', '阿克苏市', '温宿', '库车', '沙雅', '新和', '拜城', '乌什', '阿瓦提', '柯坪'],
+        '克孜勒苏': ['克孜勒苏', '阿图什', '阿克陶', '阿合奇', '乌恰'],
+        '喀什': ['喀什', '喀', '喀什市', '疏附', '疏勒', '英吉沙', '泽普', '莎车', '叶城', '麦盖提', '岳普湖', '伽师', '巴楚', '塔什库尔干'],
+        '和田': ['和田', '和', '和田市', '和田县', '墨玉', '皮山', '洛浦', '策勒', '于田', '民丰'],
+        '伊犁': ['伊犁', '伊宁', '奎屯', '霍尔果斯', '伊宁县', '察布查尔', '霍城', '巩留', '新源', '昭苏', '特克斯', '尼勒克'],
+        '塔城': ['塔城', '塔', '塔城市', '乌苏', '额敏', '沙湾', '托里', '裕民', '和布克赛尔'],
+        '阿勒泰': ['阿勒泰', '阿勒', '阿勒泰市', '布尔津', '富蕴', '福海', '哈巴河', '青河', '吉木乃'],
+        '石河子': ['石河子'],
+        '阿拉尔': ['阿拉尔'],
+        '图木舒克': ['图木舒克'],
+        '五家渠': ['五家渠'],
+        '北屯': ['北屯'],
+        '铁门关': ['铁门关'],
+        '双河': ['双河'],
+        '可克达拉': ['可克达拉'],
+        '昆玉': ['昆玉'],
+        '胡杨河': ['胡杨河'],
+        
+        # 海南省
+        '海口': ['海口', '海', '海南海口', '秀英', '龙华', '琼山', '美兰'],
+        '三亚': ['三亚', '三', '海棠', '吉阳', '天涯', '崖州'],
+        '三沙': ['三沙', '西沙', '南沙'],
+        '儋州': ['儋州', '儋'],
+        '琼海': ['琼海'],
+        '文昌': ['文昌'],
+        '万宁': ['万宁'],
+        '东方': ['东方'],
+        '五指山': ['五指山'],
+        
+        # 青海省
+        '西宁': ['西宁', '西', '青海西宁', '城东', '城中', '城西', '城北', '湟中', '湟源', '大通'],
+        '海东': ['海东', '乐都', '平安', '民和', '互助', '化隆', '循化'],
+        '海北': ['海北', '海晏', '祁连', '刚察', '门源'],
+        '黄南': ['黄南', '同仁', '尖扎', '泽库', '河南'],
+        '海南州': ['海南', '共和', '同德', '贵德', '兴海', '贵南'],
+        '果洛': ['果洛', '玛沁', '班玛', '甘德', '达日', '久治', '玛多'],
+        '玉树': ['玉树', '玉树市', '杂多', '称多', '治多', '囊谦', '曲麻莱'],
+        '海西': ['海西', '格尔木', '德令哈', '茫崖', '乌兰', '都兰', '天峻'],
+        
+        # 台湾省
+        '台北': ['台北', '北市'],
+        '新北': ['新北', '新北市'],
+        '桃园': ['桃园', '桃园市'],
+        '台中': ['台中', '台中市'],
+        '台南': ['台南', '台南市'],
+        '高雄': ['高雄', '高雄市'],
+        '基隆': ['基隆', '基隆市'],
+        '新竹': ['新竹', '新竹市'],
+        '嘉义': ['嘉义', '嘉义市'],
+        
+        # 香港特别行政区
+        '香港': ['香港', '港', 'HK', 'Hong Kong'],
+        
+        # 澳门特别行政区
+        '澳门': ['澳门', '澳', 'Macau', 'Macao'],
+    }
+
+    
+
     def __init__(self, express_id: int, tracking_num: str, parent_gui, parent=None):
         super().__init__(parent)
         self.express_id = express_id
@@ -5849,7 +8007,7 @@ class ExpressDetailDialog(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle(f"{ProjectInfo.NAME} - 快递详情 - {self.tracking_num}")
-        self.setMinimumSize(800, 700)
+        self.setMinimumSize(900, 750)
         
         layout = QVBoxLayout()
         layout.setSpacing(10)
@@ -5857,7 +8015,7 @@ class ExpressDetailDialog(QDialog):
         # 使用QTabWidget来组织内容
         self.detail_tab_widget = QTabWidget()
         
-        # 基本信息标签页
+        # ========== 标签页1：基本信息 ==========
         info_widget = QWidget()
         info_layout = QVBoxLayout(info_widget)
         
@@ -5876,15 +8034,86 @@ class ExpressDetailDialog(QDialog):
         
         self.detail_tab_widget.addTab(info_widget, "📋 基本信息")
         
-        # 物流轨迹标签页
+        # ========== 标签页2：物流轨迹 ==========
         track_widget = QWidget()
         track_layout = QVBoxLayout(track_widget)
         self.track_text = QTextEdit()
         self.track_text.setReadOnly(True)
         track_layout.addWidget(self.track_text)
         self.detail_tab_widget.addTab(track_widget, "📜 物流轨迹")
+    
+        # ========== 标签页3：地图轨迹 ==========
+        map_widget = QWidget()
+        map_layout = QVBoxLayout(map_widget)
+        map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(0)
+
+        # 合并后的紧凑工具栏（一行显示）
+        compact_toolbar = QWidget()
+        compact_toolbar.setFixedHeight(32)  # 固定高度32px
+        compact_toolbar_layout = QHBoxLayout(compact_toolbar)
+        compact_toolbar_layout.setContentsMargins(5, 2, 5, 2)
+        compact_toolbar_layout.setSpacing(8)
+
+        # 瓦片源选择（带图标）
+        compact_toolbar_layout.addWidget(QLabel("🗺️"))
+        self.tile_source_combo = QComboBox()
+        self.tile_source_combo.addItem("高德地图", "amap")
+        self.tile_source_combo.addItem("高德卫星", "amap_satellite")
+        self.tile_source_combo.addItem("OpenStreetMap", "osm")
+        self.tile_source_combo.addItem("CartoDB", "cartodb")
+        self.tile_source_combo.addItem("Stamen Terrain", "stamen")
+        self.tile_source_combo.addItem("Stamen Toner", "stamen_toner")
+        self.tile_source_combo.setToolTip("选择地图瓦片源")
+        self.tile_source_combo.setFixedWidth(130)
+        self.tile_source_combo.currentIndexChanged.connect(self.on_tile_source_changed)
+        compact_toolbar_layout.addWidget(self.tile_source_combo)
+
+        # 分隔线
+        sep = QLabel("|")
+        sep.setStyleSheet("color: #ccc;")
+        compact_toolbar_layout.addWidget(sep)
+
+        # 代理状态（紧凑显示）
+        self.proxy_status_label = QLabel()
+        self.proxy_status_label.setFixedHeight(20)
+        self.update_proxy_status_display()
+        compact_toolbar_layout.addWidget(self.proxy_status_label)
+
+        compact_toolbar_layout.addStretch()
+
+        # 当前瓦片源信息（右侧显示）
+        self.tile_info_label = QLabel()
+        self.tile_info_label.setStyleSheet("color: #888; font-size: 10px; padding: 0 4px;")
+        self.update_tile_info_display()
+        compact_toolbar_layout.addWidget(self.tile_info_label)
+
+        map_layout.addWidget(compact_toolbar)
+
+
+        # 创建 WebEngine 视图
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+            from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings
+            
+            # ========== 关键修复：设置 WebEngine 代理 ==========
+            self.setup_webengine_proxy()
         
-        # 站点时间轴标签页（新增）
+            self.map_view = QWebEngineView()
+            self.has_webengine = True
+        except ImportError:
+            self.map_view = QTextEdit()
+            self.map_view.setReadOnly(True)
+            self.has_webengine = False
+            if DEBUG_MODE:
+                print("[地图] PySide6-WebEngine 未安装，将使用文本模式显示地图信息")
+
+        # 直接添加地图视图，不添加任何工具栏（工具栏已在HTML内部）
+        map_layout.addWidget(self.map_view)
+
+        self.detail_tab_widget.addTab(map_widget, "🗺️ 地图轨迹")
+    
+        # ========== 标签页4：站点时间轴 ==========
         site_timeline_widget = QWidget()
         site_timeline_layout = QVBoxLayout(site_timeline_widget)
         
@@ -5919,7 +8148,7 @@ class ExpressDetailDialog(QDialog):
         site_timeline_layout.addWidget(splitter)
         self.detail_tab_widget.addTab(site_timeline_widget, "📍 站点时间轴")
         
-        # 节点时间分析标签页
+        # ========== 标签页5：详细分析 ==========
         analysis_widget = QWidget()
         analysis_layout = QVBoxLayout(analysis_widget)
         self.analysis_text = QTextEdit()
@@ -5930,6 +8159,7 @@ class ExpressDetailDialog(QDialog):
         
         layout.addWidget(self.detail_tab_widget)
         
+        # 底部按钮
         btn_layout = QHBoxLayout()
         
         self.refresh_btn = QPushButton("刷新 (F5)")
@@ -5952,7 +8182,177 @@ class ExpressDetailDialog(QDialog):
         
         close_shortcut = QShortcut(QKeySequence("Esc"), self)
         close_shortcut.activated.connect(self.accept)
+
+    def update_tile_info_display(self):
+        """更新瓦片源信息显示"""
+        tile_source = self.tile_source_combo.currentData()
+        tile_names = {
+            'osm': '🌍 OSM',
+            'cartodb': '🗺️ CartoDB',
+            'stamen': '🎨 Stamen',
+            'stamen_toner': '⚫ Stamen Toner',
+            'amap': '🇨🇳 高德',
+            'amap_satellite': '🛰️ 高德卫星'
+        }
+        self.tile_info_label.setText(tile_names.get(tile_source, ''))
+
+
+    def update_proxy_status_display(self):
+        """更新代理状态显示（紧凑版）- 根据当前瓦片源动态显示"""
+        if self.parent_gui and hasattr(self.parent_gui, 'proxy_settings'):
+            proxy_settings = self.parent_gui.proxy_settings
+            proxy_enabled = proxy_settings.get('enabled', False)
+            
+            # 获取当前瓦片源
+            tile_source = self.tile_source_combo.currentData() if hasattr(self, 'tile_source_combo') else 'cartodb'
+            
+            # 高德地图源
+            amap_sources = ['amap', 'amap_satellite']
+            
+            if tile_source in amap_sources:
+                self.proxy_status_label.setText("🇨🇳 高德直连")
+                self.proxy_status_label.setStyleSheet("font-size: 10px; padding: 2px 6px; border-radius: 10px; background-color: #E8F5E9; color: #2E7D32;")
+            elif tile_source == 'osm':
+                if proxy_enabled:
+                    self.proxy_status_label.setText("🔌 OSM(代理)")
+                    self.proxy_status_label.setStyleSheet("font-size: 10px; padding: 2px 6px; border-radius: 10px; background-color: #E8F5E9; color: #2E7D32;")
+                else:
+                    self.proxy_status_label.setText("⚠️ OSM需代理")
+                    self.proxy_status_label.setStyleSheet("font-size: 10px; padding: 2px 6px; border-radius: 10px; background-color: #FFEBEE; color: #C62828;")
+            else:
+                if proxy_enabled:
+                    self.proxy_status_label.setText("🔌 代理已启用")
+                    self.proxy_status_label.setStyleSheet("font-size: 10px; padding: 2px 6px; border-radius: 10px; background-color: #E8F5E9; color: #2E7D32;")
+                else:
+                    self.proxy_status_label.setText("🌐 直连")
+                    self.proxy_status_label.setStyleSheet("font-size: 10px; padding: 2px 6px; border-radius: 10px; background-color: #FFF3E0; color: #E65100;")
+
+    def on_tile_source_changed(self, index: int):
+        """瓦片源改变时重新加载地图"""
+        self.update_tile_info_display()
+        self.load_map()
+
+
+    def get_tile_config(self, tile_source: str) -> Tuple[str, str, str, str]:
+        """
+        获取瓦片源配置
+        返回: (url, attribution, subdomains, badge_text)
+        """
+        configs = {
+            # OpenStreetMap 官方瓦片（需要 Referer）
+            'osm': (
+                "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                'abc',
+                '🌍 OpenStreetMap'
+            ),
+            # CartoDB 瓦片（OpenStreetMap 数据，无需 Referer）
+            'cartodb': (
+                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+                '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+                'abcd',
+                '🗺️ CartoDB'
+            ),
+            # Stamen Terrain 地形图
+            'stamen': (
+                "https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png",
+                'Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> | Data by &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+                'abcd',
+                '🎨 Stamen Terrain'
+            ),
+            # Stamen Toner 黑白图
+            'stamen_toner': (
+                "https://stamen-tiles-{s}.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
+                'Map tiles by <a href="http://stamen.com">Stamen Design</a>, under <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> | Data by &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+                'abcd',
+                '🎨 Stamen Toner'
+            ),
+            # 高德地图（国内）
+            'amap': (
+                "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+                '&copy; <a href="https://www.amap.com/">高德地图</a>',
+                '1234',
+                '🇨🇳 高德地图'
+            ),
+            # 高德卫星图
+            'amap_satellite': (
+                "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+                '&copy; <a href="https://www.amap.com/">高德地图</a>',
+                '1234',
+                '🛰️ 高德卫星图'
+            ),
+        }
         
+        return configs.get(tile_source, configs['cartodb'])
+
+    def setup_webengine_proxy(self):
+        """设置 WebEngine 的代理配置"""
+        try:
+            from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings
+            
+            # 获取代理设置
+            use_proxy = False
+            proxy_host = None
+            proxy_port = None
+            proxy_username = None
+            proxy_password = None
+            
+            if self.parent_gui and hasattr(self.parent_gui, 'proxy_settings'):
+                proxy_settings = self.parent_gui.proxy_settings
+                use_proxy = proxy_settings.get('enabled', False) and proxy_settings.get('for_map', True)
+                
+                if use_proxy:
+                    proxy_host = proxy_settings.get('host', '')
+                    proxy_port = proxy_settings.get('port', 0)
+                    proxy_username = proxy_settings.get('username', '')
+                    proxy_password = proxy_settings.get('password', '')
+            
+            if use_proxy and proxy_host and proxy_port:
+                # 方法1：通过环境变量设置代理（简单有效）
+                import os
+                proxy_url = f"http://{proxy_host}:{proxy_port}"
+                os.environ['QT_WEBENGINE_DISABLE_SANDBOX'] = '1'
+                
+                # 设置 HTTP/HTTPS 代理环境变量
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
+                
+                # 如果有用户名密码，需要特殊处理
+                if proxy_username and proxy_password:
+                    proxy_auth_url = f"http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}"
+                    os.environ['http_proxy'] = proxy_auth_url
+                    os.environ['https_proxy'] = proxy_auth_url
+                
+                # 方法2：通过 QWebEngineProfile 设置代理（更精确）
+                profile = QWebEngineProfile.defaultProfile()
+                
+                # 设置代理
+                from PySide6.QtNetwork import QNetworkProxy
+                proxy = QNetworkProxy()
+                proxy.setType(QNetworkProxy.HttpProxy)
+                proxy.setHostName(proxy_host)
+                proxy.setPort(proxy_port)
+                if proxy_username and proxy_password:
+                    proxy.setUser(proxy_username)
+                    proxy.setPassword(proxy_password)
+                QNetworkProxy.setApplicationProxy(proxy)
+                
+                # 设置 WebEngine 设置
+                settings = profile.settings()
+                settings.setAttribute(QWebEngineSettings.WebGLEnabled, True)
+                settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, True)
+                settings.setAttribute(QWebEngineSettings.FullScreenSupportEnabled, True)
+                
+                if DEBUG_MODE:
+                    print(f"[WebEngine代理] 已设置代理: {proxy_host}:{proxy_port}")
+            else:
+                if DEBUG_MODE:
+                    print("[WebEngine代理] 未启用代理，使用直连")
+        
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"[WebEngine代理设置失败] {e}")
+
     def refresh_data(self):
         """刷新数据 - 主动查询API"""
         if not self.parent_gui:
@@ -6054,6 +8454,7 @@ class ExpressDetailDialog(QDialog):
             
         self.setWindowTitle(f"快递详情 - {self.express_data.get('tracking_number', '')}")
         
+        # 清空并更新基本信息布局
         while self.info_layout.count():
             item = self.info_layout.takeAt(0)
             if item.widget():
@@ -6118,6 +8519,7 @@ class ExpressDetailDialog(QDialog):
             value_label = QLabel(str(value))
             self.info_layout.addWidget(value_label, i, 1)
         
+        # 备注显示
         remark = self.express_data.get('remark', '')
         if remark:
             self.remark_label.setText(remark)
@@ -6126,6 +8528,7 @@ class ExpressDetailDialog(QDialog):
             self.remark_label.setText("无备注")
             self.remark_label.setStyleSheet("color: #999; font-style: italic;")
         
+        # 物流轨迹显示
         self.track_text.clear()
         if result_data:
             try:
@@ -6147,6 +8550,9 @@ class ExpressDetailDialog(QDialog):
                 self.track_text.setText(f"无法解析物流数据: {e}")
         else:
             self.track_text.setText("暂无物流数据")
+    
+        # ========== 加载地图 ==========
+        self.load_map()
         
         # 更新站点时间轴
         self.update_site_timeline(full_data)
@@ -6230,6 +8636,924 @@ class ExpressDetailDialog(QDialog):
         except Exception as e:
             if DEBUG_MODE:
                 print(f"更新站点时间轴失败: {e}")
+
+    # ==================== 地图相关方法 ====================
+    
+    def extract_city_from_site(self, site_name: str) -> str:
+        """从站点名称提取城市"""
+        if not site_name:
+            return ""
+        
+        for city, patterns in self.SITE_CITY_PATTERNS.items():
+            for pattern in patterns:
+                if pattern in site_name:
+                    return city
+        return ""
+
+    def get_city_coordinates(self, city_name: str) -> tuple:
+        """获取城市坐标"""
+        if not city_name:
+            return None, None
+        
+        # 清理城市名
+        city_name = city_name.replace('市', '').replace('省', '').strip()
+        
+        # 查找精确匹配
+        if city_name in self.CITY_COORDINATES:
+            lat, lng = self.CITY_COORDINATES[city_name]
+            return lat, lng
+        
+        # 模糊匹配
+        for key, coords in self.CITY_COORDINATES.items():
+            if city_name in key or key in city_name:
+                return coords[0], coords[1]
+        
+        return None, None
+
+    def extract_city_from_context(self, context: str) -> str:
+        """从上下文提取城市"""
+        if not context:
+            return ""
+        
+        for city in self.CITY_COORDINATES.keys():
+            if city in context:
+                return city
+        
+        # 尝试匹配省+市格式
+        pattern = r'([^\s]+?[省市])?([^\s]+?[市])'
+        match = re.search(pattern, context)
+        if match:
+            city_part = match.group(2) or match.group(1)
+            if city_part:
+                city = city_part.replace('市', '').replace('省', '')
+                return city
+        
+        return ""
+
+    def extract_site_from_context(self, context: str) -> str:
+        """从上下文提取站点名"""
+        if not context:
+            return ""
+        
+        # 提取【】内的内容
+        bracket_match = re.search(r'【([^】]+)】', context)
+        if bracket_match:
+            return bracket_match.group(1)
+        
+        # 提取常见站点后缀
+        pattern = r'([^\s，。；]*?(?:公司|网点|分部|中心|仓|部|站|转运中心|分拨中心|处理中心))'
+        match = re.search(pattern, context)
+        if match:
+            return match.group(1)
+        
+        return ""
+
+    def extract_track_points(self, full_data: dict) -> List[Dict]:
+        """从物流数据中提取轨迹点（包含坐标信息）"""
+        track_points = []
+        
+        if not full_data:
+            return track_points
+        
+        track_list = full_data.get('data', [])
+        if not track_list:
+            return track_points
+        
+        # 使用节点分析器提取节点
+        if self.node_analyzer:
+            nodes = self.node_analyzer.extract_nodes_from_track(track_list)
+        else:
+            # 如果没有节点分析器，手动解析
+            nodes = []
+            for track in track_list:
+                context = track.get('context', '')
+                time_str = track.get('time', '')
+                if time_str:
+                    nodes.append({
+                        'context': context,
+                        'time_str': time_str,
+                        'city': self.extract_city_from_context(context),
+                        'site_name': self.extract_site_from_context(context),
+                        'action_type': 'other',
+                        'node_type': 'unknown',
+                    })
+        
+        # 为每个节点添加坐标
+        for i, node in enumerate(nodes):
+            city = node.get('city', '')
+            site_name = node.get('site_name', '')
+            
+            # 尝试从站点名提取城市
+            if not city and site_name:
+                city = self.extract_city_from_site(site_name)
+            
+            lat, lng = None, None
+            if city:
+                lat, lng = self.get_city_coordinates(city)
+            
+            # 确定节点类型
+            node_type = 'normal'
+            action_type = node.get('action_type', '')
+            if action_type == 'pickup':
+                node_type = 'pickup'
+            elif node.get('node_type') == 'transit_center':
+                node_type = 'transit_center'
+            
+            # 最后一个节点标记为当前位置
+            if i == len(nodes) - 1:
+                node_type = 'current'
+            
+            track_points.append({
+                'lat': lat,
+                'lng': lng,
+                'city': city,
+                'site_name': site_name,
+                'time_str': node.get('time_str', ''),
+                'context': node.get('context', '')[:100],
+                'type': node_type,
+                'action_type': action_type,
+            })
+        
+        return track_points
+
+    def load_map(self):
+        """加载地图"""
+        if not self.express_data:
+            return
+        
+        result_data = self.express_data.get('result_data', '')
+        if not result_data:
+            error_msg = "<html><body style='font-family: Microsoft YaHei; padding: 20px; text-align: center;'><h3>暂无物流数据</h3><p>无法显示地图轨迹</p></body></html>"
+            if self.has_webengine:
+                self.map_view.setHtml(error_msg)
+            else:
+                self.map_view.setText("暂无物流数据，无法显示地图轨迹")
+            return
+        
+        try:
+            full_data = json.loads(result_data)
+            track_points = self.extract_track_points(full_data)
+            
+            # 统计有效点
+            valid_count = sum(1 for p in track_points if p['lat'] and p['lng'])
+            # 在状态栏显示统计信息
+            if self.parent_gui:
+                self.parent_gui.status_bar.showMessage(
+                    f"🗺️ 地图轨迹: 共 {len(track_points)} 个节点，{valid_count} 个有效位置点", 
+                    3000
+                )
+            
+            if self.has_webengine:
+                # 生成并显示地图
+                html_content = self.get_map_html(track_points)
+                self.map_view.setHtml(html_content)
+            else:
+                # 文本模式显示轨迹信息
+                text_display = self.get_map_text_display(track_points)
+                self.map_view.setText(text_display)
+            
+        except Exception as e:
+            error_msg = f"""
+            <html>
+            <body style="font-family: Microsoft YaHei; padding: 20px; text-align: center;">
+                <h3>地图加载失败</h3>
+                <p style="color: #F44336;">{str(e)}</p>
+            </body>
+            </html>
+            """
+            if self.has_webengine:
+                self.map_view.setHtml(error_msg)
+            else:
+                self.map_view.setText(f"地图加载失败：{str(e)}")
+
+    def get_map_html(self, track_points: List[Dict]) -> str:
+        """生成地图HTML - 高德直连，OSM等走代理"""
+        import json
+        
+        # 处理轨迹点
+        points_json = json.dumps(track_points, ensure_ascii=False)
+        
+        # 获取当前选择的瓦片源
+        tile_source = self.tile_source_combo.currentData()
+        if not tile_source:
+            tile_source = 'cartodb'  # 默认使用 CartoDB
+        
+        # 获取瓦片配置
+        tile_url, tile_attribution, tile_subdomains, map_badge = self.get_tile_config(tile_source)
+        
+        # ========== 核心逻辑：根据瓦片源类型决定是否使用代理 ==========
+        # 高德地图相关瓦片源（直通，不需要代理）
+        amap_sources = ['amap', 'amap_satellite']
+        # OSM 相关瓦片源（需要代理）
+        need_proxy_sources = ['osm']
+        
+        use_proxy = False
+        proxy_host = None
+        proxy_port = None
+        proxy_username = None
+        proxy_password = None
+        
+        # 检查代理设置
+        if self.parent_gui and hasattr(self.parent_gui, 'proxy_settings'):
+            proxy_settings = self.parent_gui.proxy_settings
+            proxy_enabled = proxy_settings.get('enabled', False)
+            
+            if proxy_enabled:
+                # 对于高德地图，强制不使用代理（直连更快更稳定）
+                if tile_source in amap_sources:
+                    use_proxy = False
+                # 对于 OSM，必须使用代理
+                elif tile_source in need_proxy_sources:
+                    use_proxy = True
+                    proxy_host = proxy_settings.get('host', '')
+                    proxy_port = proxy_settings.get('port', 0)
+                    proxy_username = proxy_settings.get('username', '')
+                    proxy_password = proxy_settings.get('password', '')
+                else:
+                    # CartoDB、Stamen 等：优先尝试直连，失败时可通过用户设置决定
+                    use_proxy = proxy_settings.get('for_map', True)
+                    proxy_host = proxy_settings.get('host', '')
+                    proxy_port = proxy_settings.get('port', 0)
+                    proxy_username = proxy_settings.get('username', '')
+                    proxy_password = proxy_settings.get('password', '')
+        
+        # 根据是否需要代理，选择最终的瓦片 URL
+        final_tile_url = tile_url
+        final_tile_attribution = tile_attribution
+        final_tile_subdomains = tile_subdomains
+        final_map_badge = map_badge
+        
+        if use_proxy and tile_source in need_proxy_sources:
+            # OSM 需要代理，使用 HTTPS 协议
+            final_tile_url = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            final_tile_attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            final_tile_subdomains = 'abc'
+            final_map_badge = '🌍 OpenStreetMap (代理)'
+        elif tile_source in amap_sources:
+            # 高德地图：直连
+            final_map_badge = f'🇨🇳 {map_badge} (直连)'
+        elif use_proxy:
+            # 其他瓦片源使用代理
+            final_map_badge = f'{map_badge} (代理)'
+        else:
+            final_map_badge = f'{map_badge} (直连)'
+        
+        # 代理提示（仅用于显示）
+        proxy_hint = ""
+        if tile_source in need_proxy_sources and not use_proxy:
+            proxy_hint = '<span style="color: #F44336; font-size: 10px; margin-left: 8px;">⚠️ OSM需要代理才能使用</span>'
+        elif tile_source in amap_sources:
+            proxy_hint = '<span style="color: #4CAF50; font-size: 10px; margin-left: 8px;">✅ 国内直连</span>'
+        elif use_proxy:
+            proxy_hint = '<span style="color: #4CAF50; font-size: 10px; margin-left: 8px;">✅ 代理已启用</span>'
+        
+        return f'''<!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+        <title>物流轨迹地图</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body, html {{
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                font-family: 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+            }}
+            
+            #map {{
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 1;
+            }}
+            
+            /* 右上角紧凑工具栏 */
+            .map-toolbar {{
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                z-index: 1000;
+                display: flex;
+                gap: 8px;
+                pointer-events: none;
+            }}
+            
+            .toolbar-btn {{
+                pointer-events: auto;
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(8px);
+                border: 1px solid rgba(255, 255, 255, 0.5);
+                border-radius: 20px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 500;
+                color: #333;
+                cursor: pointer;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+                transition: all 0.2s ease;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                border: none;
+                outline: none;
+                line-height: 1;
+            }}
+            
+            .toolbar-btn:hover {{
+                background: rgba(255, 255, 255, 0.98);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                transform: translateY(-1px);
+            }}
+            
+            .toolbar-btn:active {{
+                transform: translateY(0);
+            }}
+            
+            .toolbar-btn.zoom-fit {{
+                background: rgba(33, 150, 243, 0.9);
+                color: white;
+            }}
+            
+            .toolbar-btn.zoom-fit:hover {{
+                background: #1976D2;
+            }}
+            
+            .toolbar-btn.zoom-in {{
+                background: rgba(76, 175, 80, 0.9);
+                color: white;
+            }}
+            
+            .toolbar-btn.zoom-out {{
+                background: rgba(76, 175, 80, 0.9);
+                color: white;
+            }}
+            
+            /* 瓦片源信息面板 */
+            .tile-info {{
+                position: absolute;
+                bottom: 12px;
+                left: 12px;
+                z-index: 1000;
+                background: rgba(0, 0, 0, 0.7);
+                backdrop-filter: blur(8px);
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 10px;
+                color: #ccc;
+                pointer-events: none;
+                font-family: monospace;
+            }}
+            
+            /* 左上角信息面板 */
+            .info-panel {{
+                position: absolute;
+                top: 12px;
+                left: 12px;
+                z-index: 1000;
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(8px);
+                padding: 8px 16px;
+                border-radius: 24px;
+                box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.5);
+                font-size: 12px;
+                color: #333;
+                pointer-events: none;
+            }}
+            
+            .route-stats {{
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                flex-wrap: wrap;
+            }}
+            
+            .stat-item {{
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }}
+            
+            .stat-icon {{
+                font-size: 14px;
+            }}
+            
+            .stat-value {{
+                font-weight: 600;
+                color: #2196F3;
+            }}
+            
+            .map-badge {{
+                display: inline-block;
+                padding: 2px 10px;
+                border-radius: 16px;
+                font-size: 10px;
+                font-weight: 500;
+                margin-left: 8px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }}
+        
+            .map-badge.osm {{
+                background: linear-gradient(135deg, #4CAF50, #2E7D32);
+            }}
+            
+            /* 右下角图例 */
+            .legend {{
+                position: absolute;
+                bottom: 24px;
+                right: 12px;
+                z-index: 1000;
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(8px);
+                padding: 12px 16px;
+                border-radius: 12px;
+                box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.5);
+                font-size: 11px;
+                min-width: 150px;
+                pointer-events: none;
+            }}
+            
+            .legend-title {{
+                font-weight: 600;
+                margin-bottom: 8px;
+                color: #333;
+                font-size: 12px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }}
+            
+            .legend-item {{
+                display: flex;
+                align-items: center;
+                margin: 6px 0;
+                gap: 8px;
+            }}
+            
+            .legend-dot {{
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                border: 2px solid white;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+                flex-shrink: 0;
+            }}
+            
+            .legend-line {{
+                width: 20px;
+                height: 2px;
+                border-radius: 2px;
+                flex-shrink: 0;
+            }}
+            
+            .legend-line.dashed {{
+                background: repeating-linear-gradient(90deg, #9E9E9E 0px, #9E9E9E 3px, transparent 3px, transparent 6px);
+            }}
+            
+            .legend-text {{
+                color: #555;
+            }}
+            
+            /* 缩放控件样式优化 */
+            .leaflet-control-zoom {{
+                border: none !important;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+                border-radius: 8px !important;
+                overflow: hidden;
+                margin: 12px !important;
+            }}
+            
+            .leaflet-control-zoom a {{
+                background: rgba(255, 255, 255, 0.92) !important;
+                backdrop-filter: blur(8px);
+                color: #333 !important;
+                border: none !important;
+                width: 32px !important;
+                height: 32px !important;
+                line-height: 32px !important;
+                font-size: 16px !important;
+            }}
+            
+            .leaflet-control-zoom a:hover {{
+                background: rgba(255, 255, 255, 0.98) !important;
+            }}
+            
+            /* 弹出框样式 */
+            .leaflet-popup-content-wrapper {{
+                border-radius: 12px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+                padding: 4px;
+            }}
+            
+            .leaflet-popup-content {{
+                font-size: 12px;
+                max-width: 300px;
+                margin: 10px 14px;
+            }}
+            
+            .popup-title {{
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 4px;
+                font-size: 13px;
+            }}
+            
+            .popup-time {{
+                color: #999;
+                font-size: 10px;
+                margin-bottom: 6px;
+            }}
+            
+            .popup-context {{
+                color: #555;
+                line-height: 1.5;
+                font-size: 11px;
+            }}
+            
+            /* 无数据提示 */
+            .no-data-message {{
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                z-index: 1000;
+                background: rgba(255, 255, 255, 0.95);
+                padding: 20px 28px;
+                border-radius: 16px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+                text-align: center;
+                color: #666;
+                font-size: 14px;
+            }}
+            
+            .no-data-message .icon {{
+                font-size: 40px;
+                margin-bottom: 8px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        
+        <!-- 左上角信息 -->
+        <div class="info-panel">
+            <div class="route-stats">
+                <span class="stat-item">
+                    <span class="stat-icon">📍</span>
+                    <span>节点: <span class="stat-value" id="node-count">0</span></span>
+                </span>
+                <span class="stat-item">
+                    <span class="stat-icon">📏</span>
+                    <span>有效点: <span class="stat-value" id="valid-count">0</span></span>
+                </span>
+                <span class="stat-item">
+                    <span class="stat-icon">🛣️</span>
+                    <span>总长 <span class="stat-value" id="total-distance">0</span> km</span>
+                </span>
+                {final_map_badge}{proxy_hint}
+            </div>
+        </div>
+        
+        <!-- 右上角工具栏 -->
+        <div class="map-toolbar">
+            <button class="toolbar-btn zoom-fit" onclick="fitMapToBounds()">📍 自适应缩放</button>
+            <button class="toolbar-btn zoom-in" onclick="zoomIn()">🔍 +</button>
+            <button class="toolbar-btn zoom-out" onclick="zoomOut()">🔍 -</button>
+        </div>
+        
+        <div class="tile-info" id="tile-info">📡 当前瓦片源: {final_map_badge}</div>
+
+        <script>
+            const trackPoints = {points_json};
+            
+            let map;
+            let markers = [];
+            let lines = [];
+            let bounds = null;
+            let validPoints = 0;
+            
+            // 瓦片配置
+            const tileUrl = '{final_tile_url}';
+            const tileAttribution = '{final_tile_attribution}';
+            const tileSubdomains = '{final_tile_subdomains}';
+            
+            function initMap() {{
+                map = L.map('map', {{
+                    zoomControl: false,
+                    fadeAnimation: true,
+                    attributionControl: true
+                }});
+                
+                // 添加自定义缩放控件
+                L.control.zoom({{
+                    position: 'bottomright'
+                }}).addTo(map);
+                
+                // 添加瓦片图层
+                L.tileLayer(tileUrl, {{
+                    attribution: tileAttribution,
+                    maxZoom: 19,
+                    subdomains: tileSubdomains
+                }}).addTo(map);
+                
+                const icons = {{
+                    start: L.divIcon({{
+                        html: '<div style="background: linear-gradient(135deg, #4CAF50, #2E7D32); width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 6px rgba(76, 175, 80, 0.4);"></div>',
+                        iconSize: [14, 14],
+                        iconAnchor: [7, 7]
+                    }}),
+                    end: L.divIcon({{
+                        html: '<div style="background: linear-gradient(135deg, #F44336, #C62828); width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 6px rgba(244, 67, 54, 0.4);"></div>',
+                        iconSize: [14, 14],
+                        iconAnchor: [7, 7]
+                    }}),
+                    normal: L.divIcon({{
+                        html: '<div style="background: linear-gradient(135deg, #2196F3, #1565C0); width: 10px; height: 10px; border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(33, 150, 243, 0.4);"></div>',
+                        iconSize: [10, 10],
+                        iconAnchor: [5, 5]
+                    }}),
+                    transit: L.divIcon({{
+                        html: '<div style="background: linear-gradient(135deg, #FF9800, #E65100); width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(255, 152, 0, 0.4);"></div>',
+                        iconSize: [12, 12],
+                        iconAnchor: [6, 6]
+                    }}),
+                    pickup: L.divIcon({{
+                        html: '<div style="background: linear-gradient(135deg, #9C27B0, #6A1B9A); width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(156, 39, 176, 0.4);"></div>',
+                        iconSize: [12, 12],
+                        iconAnchor: [6, 6]
+                    }})
+                }};
+                
+                let boundsTemp = L.latLngBounds([]);
+                let totalDistance = 0;
+                const totalNodes = trackPoints.length;
+                validPoints = 0;
+                
+                // 先收集所有有效坐标
+                const validLatLngs = [];
+                
+                for (let i = 0; i < trackPoints.length; i++) {{
+                    const point = trackPoints[i];
+                    if (point.lat && point.lng) {{
+                        validPoints++;
+                        const latLng = L.latLng(point.lat, point.lng);
+                        validLatLngs.push(latLng);
+                        boundsTemp.extend(latLng);
+                    }}
+                }}
+                
+                // 更新显示统计信息
+                document.getElementById('node-count').textContent = totalNodes;
+                document.getElementById('valid-count').textContent = validPoints;
+                
+                if (validPoints > 0) {{
+                    // 计算总距离
+                    for (let i = 1; i < validLatLngs.length; i++) {{
+                        totalDistance += validLatLngs[i-1].distanceTo(validLatLngs[i]);
+                    }}
+                    document.getElementById('total-distance').textContent = (totalDistance / 1000).toFixed(1);
+                    
+                    // 添加标记点
+                    for (let i = 0; i < trackPoints.length; i++) {{
+                        const point = trackPoints[i];
+                        if (!point.lat || !point.lng) continue;
+                        
+                        const latLng = L.latLng(point.lat, point.lng);
+                        
+                        let icon = icons.normal;
+                        if (i === 0) icon = icons.start;
+                        else if (i === trackPoints.length - 1) icon = icons.end;
+                        else if (point.type === 'transit_center') icon = icons.transit;
+                        else if (point.type === 'pickup') icon = icons.pickup;
+                        
+                        const marker = L.marker(latLng, {{ icon: icon }})
+                            .bindPopup(`
+                                <div class="popup-title">${{point.site_name || point.city || '未知地点'}}</div>
+                                <div class="popup-time">🕐 ${{point.time_str || ''}}</div>
+                                <div class="popup-context">${{point.context || ''}}</div>
+                            `)
+                            .addTo(map);
+                        
+                        markers.push(marker);
+                    }}
+                    
+                    // 绘制主路线（连接所有有效点）
+                    if (validLatLngs.length >= 2) {{
+                        // 主路线 - 粗线
+                        const mainPolyline = L.polyline(validLatLngs, {{
+                            color: '#2196F3',
+                            weight: 3,
+                            opacity: 0.7,
+                            smoothFactor: 1
+                        }}).addTo(map);
+                        lines.push(mainPolyline);
+                        
+                        // 分段绘制（区分不同颜色）
+                        for (let i = 1; i < trackPoints.length; i++) {{
+                            const p1 = trackPoints[i-1];
+                            const p2 = trackPoints[i];
+                            
+                            if (p1.lat && p1.lng && p2.lat && p2.lng) {{
+                                let color = '#2196F3';
+                                let dashArray = null;
+                                let weight = 2;
+                                
+                                if (p1.type === 'transit_center' || p2.type === 'transit_center') {{
+                                    color = '#FF9800';
+                                }}
+                                
+                                // 同一站点内移动，用虚线表示
+                                if (p1.site_name && p2.site_name && p1.site_name === p2.site_name) {{
+                                    color = '#9E9E9E';
+                                    dashArray = '5, 5';
+                                    weight = 2;
+                                }}
+                                
+                                const segmentLine = L.polyline([[p1.lat, p1.lng], [p2.lat, p2.lng]], {{
+                                    color: color,
+                                    weight: weight,
+                                    opacity: 0.5,
+                                    dashArray: dashArray
+                                }}).addTo(map);
+                                
+                                lines.push(segmentLine);
+                            }}
+                        }}
+                    }}
+                    
+                    // 自动缩放以适应所有轨迹点
+                    if (validPoints === 1) {{
+                        map.setView(boundsTemp.getCenter(), 12);
+                    }} else if (validPoints >= 2) {{
+                        setTimeout(function() {{
+                            map.fitBounds(boundsTemp, {{ 
+                                padding: [50, 50],
+                                maxZoom: 15,
+                                animate: true
+                            }});
+                        }}, 100);
+                        
+                        bounds = boundsTemp;
+                    }}
+                }} else {{
+                    showNoDataMessage();
+                    map.setView([35.0, 105.0], 4);
+                    document.getElementById('node-count').textContent = '0';
+                    document.getElementById('valid-count').textContent = '0';
+                    document.getElementById('total-distance').textContent = '0';
+                }}
+                
+                addLegend();
+                L.control.scale({{ imperial: false, metric: true, position: 'bottomleft' }}).addTo(map);
+            }}
+            
+            function showNoDataMessage() {{
+                const div = document.createElement('div');
+                div.className = 'no-data-message';
+                div.innerHTML = '<div class="icon">🗺️</div><div>暂无有效的地理位置信息</div><div style="font-size: 11px; margin-top: 6px; opacity: 0.7;">无法显示地图轨迹</div>';
+                document.body.appendChild(div);
+            }}
+            
+            function addLegend() {{
+                const div = document.createElement('div');
+                div.className = 'legend';
+                div.innerHTML = `
+                    <div class="legend-title"><span>📌</span> 图例</div>
+                    <div class="legend-item"><div class="legend-dot" style="background: linear-gradient(135deg, #4CAF50, #2E7D32);"></div><span class="legend-text">起点/揽收</span></div>
+                    <div class="legend-item"><div class="legend-dot" style="background: linear-gradient(135deg, #F44336, #C62828);"></div><span class="legend-text">当前位置/终点</span></div>
+                    <div class="legend-item"><div class="legend-dot" style="background: linear-gradient(135deg, #FF9800, #E65100);"></div><span class="legend-text">转运中心</span></div>
+                    <div class="legend-item"><div class="legend-dot" style="background: linear-gradient(135deg, #2196F3, #1565C0);"></div><span class="legend-text">普通节点</span></div>
+                    <div class="legend-item"><div class="legend-line" style="background: #2196F3;"></div><span class="legend-text">运输路线</span></div>
+                    <div class="legend-item"><div class="legend-line dashed"></div><span class="legend-text">站点停留</span></div>
+                `;
+                document.body.appendChild(div);
+            }}
+            
+            function fitMapToBounds() {{
+                // 手动触发自适应缩放
+                if (bounds && validPoints > 1) {{
+                    map.fitBounds(bounds, {{ 
+                        padding: [50, 50],
+                        maxZoom: 15,
+                        animate: true
+                    }});
+                }} else if (validPoints === 1 && bounds) {{
+                    map.setView(bounds.getCenter(), 12);
+                }} else {{
+                    // 重新计算边界
+                    const newBounds = L.latLngBounds([]);
+                    let hasPoint = false;
+                    for (let i = 0; i < trackPoints.length; i++) {{
+                        const point = trackPoints[i];
+                        if (point.lat && point.lng) {{
+                            newBounds.extend([point.lat, point.lng]);
+                            hasPoint = true;
+                        }}
+                    }}
+                    if (hasPoint) {{
+                        bounds = newBounds;
+                        if (validPoints === 1) {{
+                            map.setView(bounds.getCenter(), 12);
+                        }} else {{
+                            map.fitBounds(bounds, {{ padding: [50, 50], maxZoom: 15, animate: true }});
+                        }}
+                    }}
+                }}
+            }}
+            
+            function zoomIn() {{
+                map.zoomIn();
+            }}
+            
+            function zoomOut() {{
+                map.zoomOut();
+            }}
+            
+            // 监听窗口大小变化，重新调整地图视图
+            window.addEventListener('resize', function() {{
+                if (map && bounds && validPoints > 1) {{
+                    setTimeout(function() {{
+                        map.fitBounds(bounds, {{ padding: [50, 50], maxZoom: 15 }});
+                    }}, 100);
+                }}
+            }});
+            
+            // 页面加载完成后初始化地图
+            document.addEventListener('DOMContentLoaded', initMap);
+        </script>
+    </body>
+    </html>'''
+
+
+
+    def refresh_map(self):
+        """刷新地图"""
+        self.load_map()
+        if self.parent_gui:
+            self.parent_gui.status_bar.showMessage("🔄 地图已刷新", 2000)
+
+    def export_map(self):
+        """导出地图为HTML文件"""
+        if not self.express_data:
+            return
+        
+        tracking_num = self.express_data.get('tracking_number', 'unknown')
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出地图轨迹", 
+            f"express_map_{tracking_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            "HTML文件 (*.html)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            result_data = self.express_data.get('result_data', '')
+            if result_data:
+                full_data = json.loads(result_data)
+                track_points = self.extract_track_points(full_data)
+                
+                if self.has_webengine:
+                    html_content = self.get_map_html(track_points)
+                else:
+                    html_content = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>物流轨迹</title></head>
+<body style="font-family: monospace; padding: 20px;">
+<pre>{self.get_map_text_display(track_points)}</pre>
+</body></html>"""
+                
+                # 添加导出信息
+                export_header = f"""<!-- 
+    快递轨迹地图
+    单号: {tracking_num}
+    导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    程序: {ProjectInfo.NAME} v{ProjectInfo.VERSION}
+-->
+"""
+                html_content = export_header + html_content
+                
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
+                if self.parent_gui:
+                    self.parent_gui.status_bar.showMessage(f"✅ 地图已导出到: {file_path}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出地图失败：{str(e)}")
 
     def closeEvent(self, event):
         """关闭事件 - 清理线程"""
@@ -6362,6 +9686,8 @@ class ExpressCategoryWidget(QWidget):
         """添加快递条目"""
         self.content_layout.addWidget(widget)
         self.express_items.append(widget)
+        # 强制处理事件，确保 widget 已经完全添加到布局
+        QApplication.processEvents()
         self.update_count()
         
     def remove_express_item(self, widget: ExpressItemWidget):
@@ -6381,9 +9707,10 @@ class ExpressCategoryWidget(QWidget):
         self.update_count()
         
     def update_count(self):
-        """更新计数（只统计可见条目）"""
-        visible_count = sum(1 for item in self.express_items if item.isVisible())
-        self.count_label.setText(f"({visible_count})")
+        """更新计数（统计所有条目）"""
+        # 改为统计所有条目，而不是只统计可见的
+        total_count = len(self.express_items)
+        self.count_label.setText(f"({total_count})")
 
 
 class UserLoginDialogPro(DialogWithStatusBar):
@@ -7813,6 +11140,7 @@ class ExpressQueryProGUI(QMainWindow):
         self.api_account_manager = None
         self.delivery_estimator = None
         self.node_analyzer = None
+        self.api_endpoint_manager = None  # 先初始化为 None
 
         self.company_codes = {
             "自动识别": "",
@@ -7888,10 +11216,79 @@ class ExpressQueryProGUI(QMainWindow):
         self.load_category_collapse_states()
         self.set_window_icon()
         
+        # 初始化API接口管理器（在登录成功后）
+        self.api_endpoint_manager = ApiEndpointManager(self.current_user_db)
+        
         # 应用全局样式
         self.setStyleSheet(MacaronStyle.get_main_style())
-        
+    
+        # ========== 关键修改：延迟更新接口显示，确保UI完全加载 ==========
+        # 等待 100ms 后再次更新，确保 api_endpoint_manager 已完全初始化
+        QTimer.singleShot(100, self.update_api_endpoint_display)
 
+        
+        # 添加验证码相关属性
+        self.pending_verification = None  # 待验证的查询信息
+        self.verification_dialog = None    # 验证码对话框
+        self.verification_retry_count = 0  # 验证重试次数
+    
+        self.refreshing_category_key = None  # 正在刷新的分类key
+        self.pending_retry_failed_items = []  # 待重试的失败列表
+
+        # 添加代理设置属性
+        self.proxy_settings = {
+            'enabled': False,
+            'type': 'http',
+            'host': '127.0.0.1',
+            'port': 20808,
+            'username': '',
+            'password': '',
+            'for_map': True,
+            'for_api': False
+        }
+        
+        # 加载代理设置
+        QTimer.singleShot(200, self.load_proxy_settings)
+
+    def load_proxy_settings(self):
+        """加载代理设置"""
+        if not self.user_manager.current_user_db:
+            return
+        
+        self.proxy_settings['enabled'] = self.user_manager.get_user_setting("proxy_enabled", "1") == "1"
+        self.proxy_settings['type'] = self.user_manager.get_user_setting("proxy_type", "HTTP").lower()
+        self.proxy_settings['host'] = self.user_manager.get_user_setting("proxy_host", "127.0.0.1")
+        self.proxy_settings['port'] = int(self.user_manager.get_user_setting("proxy_port", "20808"))
+        self.proxy_settings['username'] = self.user_manager.get_user_setting("proxy_username", "")
+        self.proxy_settings['password'] = self.user_manager.get_user_setting("proxy_password", "")
+        self.proxy_settings['for_map'] = self.user_manager.get_user_setting("proxy_for_map", "1") == "1"
+        self.proxy_settings['for_api'] = self.user_manager.get_user_setting("proxy_for_api", "0") == "1"
+
+    def update_proxy_settings(self):
+        """更新代理设置（供设置对话框调用）"""
+        self.load_proxy_settings()
+        self.status_bar.showMessage("✅ 代理设置已更新", 2000)
+
+    def get_proxy_dict(self) -> Optional[Dict]:
+        """获取代理配置字典"""
+        if not self.proxy_settings['enabled']:
+            return None
+        
+        proxy_type = self.proxy_settings['type']
+        host = self.proxy_settings['host']
+        port = self.proxy_settings['port']
+        username = self.proxy_settings['username']
+        password = self.proxy_settings['password']
+        
+        if username and password:
+            proxy_url = f"{proxy_type}://{username}:{password}@{host}:{port}"
+        else:
+            proxy_url = f"{proxy_type}://{host}:{port}"
+        
+        return {
+            'http': proxy_url,
+            'https': proxy_url
+        }
 
     def check_quota_reset(self):
         """检查是否需要重置配额"""
@@ -7917,6 +11314,14 @@ class ExpressQueryProGUI(QMainWindow):
                     self.delivery_estimator = DeliveryTimeEstimator(self.current_user_db)
                     self.node_analyzer = LogisticsNodeAnalyzer(self.current_user_db)
                     self.load_current_api_account()
+                    
+                    # 初始化API接口管理器
+                    self.api_endpoint_manager = ApiEndpointManager(self.current_user_db)
+                    
+                    # 更新接口显示（如果界面已创建）
+                    if hasattr(self, 'api_endpoint_status'):
+                        self.update_api_endpoint_display()
+                    
                     return True
                 else:
                     QMessageBox.critical(self, "登录失败", message)
@@ -7928,16 +11333,18 @@ class ExpressQueryProGUI(QMainWindow):
         if self.api_account_manager:
             # 先强制检查并重置每日使用次数
             self.api_account_manager.check_and_reset_daily_usage()
-            # 注意：不要调用 load_accounts()，因为它会重置 current_account 为第一个账号
             
+            # ========== 不要调用 load_accounts()，因为它会重置当前账号 ==========
+            # 直接获取当前账号（保持之前设置的 current_account）
             account = self.api_account_manager.get_current_account()
+            
             if account:
                 self.customer = account.get('customer', '')
                 self.key = account.get('auth_key', '')
                 self.update_api_account_display()
                 
                 if DEBUG_MODE:
-                    print(f"[账号加载] 当前账号: {account.get('account_name', '')}")
+                    print(f"[账号加载] 当前账号: {account.get('account_name', '')} (ID={account.get('id', '')})")
                     print(f"[账号加载] Customer: {self.customer[:10] if self.customer else 'empty'}...")
                     print(f"[账号加载] Auth Key: {self.key[:10] if self.key else 'empty'}...")
                 
@@ -8003,7 +11410,11 @@ class ExpressQueryProGUI(QMainWindow):
         self.database_tab = QWidget()
         self.setup_database_tab()
         self.main_tab_widget.addTab(self.database_tab, "🗄️ 数据库管理")
-        
+
+        self.dest_address_tab = QWidget()
+        self.setup_dest_address_tab()
+        self.main_tab_widget.addTab(self.dest_address_tab, "📮 收件地址")
+
         main_layout.addWidget(self.main_tab_widget)
         
         # ========== 状态栏设置 ==========
@@ -8121,6 +11532,20 @@ class ExpressQueryProGUI(QMainWindow):
         self.api_account_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()};")
         toolbar_layout.addWidget(self.api_account_label)
         self.update_api_account_display()
+    
+        # ========== 新增：接口类型状态标签 ==========
+        self.api_endpoint_status = QLabel()
+        self.api_endpoint_status.setStyleSheet("""
+            font-weight: bold;
+            padding: 2px 8px;
+            border-radius: 12px;
+            margin: 0 5px;
+        """)
+        toolbar_layout.addWidget(self.api_endpoint_status)
+
+        # 尝试立即更新接口显示（此时 api_endpoint_manager 可能还未完全初始化）
+        # 但这个方法会被调用，不会报错，只是可能显示不准确
+        self.update_api_endpoint_display()  # 更新接口状态显示
         
         toolbar_layout.addStretch()
 
@@ -8319,6 +11744,20 @@ class ExpressQueryProGUI(QMainWindow):
         """)
         toolbar.addWidget(add_btn)
     
+        # ========== 直接添加按钮 ==========
+        direct_add_btn = QPushButton("⚡ 直接添加")
+        direct_add_btn.setToolTip("跳过API查询，直接将单号添加到汇总（状态为待查询）")
+        direct_add_btn.clicked.connect(self.direct_add_manual_express)
+        direct_add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.ORANGE_PEACH.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.ORANGE_APRICOT.name()};
+            }}
+        """)
+        toolbar.addWidget(direct_add_btn)
+
         # 添加批量导入按钮
         batch_import_btn = QPushButton("📦 批量导入")
         batch_import_btn.setToolTip("从文件或粘贴板批量导入快递单号")
@@ -8626,6 +12065,56 @@ class ExpressQueryProGUI(QMainWindow):
         
         return card
 
+
+    def direct_add_manual_express(self):
+        """直接添加快递到汇总（跳过API查询）"""
+        tracking_num = self.manual_tracking_input.text().strip()
+        if not tracking_num:
+            self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
+            return
+            
+        company_name = self.manual_company_combo.currentText()
+        company_code = self.company_codes.get(company_name, "")
+        
+        # 如果启用了自动识别，尝试根据单号格式识别
+        if company_name == "自动识别" or not company_code:
+            detected_code, detected_name = self.get_company_code_by_number(tracking_num)
+            if detected_code:
+                company_code = detected_code
+                company_name = detected_name
+            else:
+                company_name = "未知"
+                company_code = ""
+        
+        if self.user_manager.current_user_db:
+            # 检查是否已存在
+            check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+            existing = self.user_manager.current_user_db.execute_query(check_sql, (tracking_num,))
+            if existing:
+                self.status_bar.showMessage("✅ 该快递单号已存在于汇总中", 3000)
+                return
+            
+            # 创建待查询状态的数据
+            pending_data = {
+                'nu': tracking_num,
+                'com': company_code,
+                'state': '0',
+                'data': [],
+                'message': '手动添加，待查询'
+            }
+            
+            # 添加到汇总
+            self.add_to_summary(pending_data, company_name)
+            
+            # 清空输入框
+            self.manual_tracking_input.clear()
+            
+            # 刷新汇总显示
+            self.load_summary_data()
+            
+            self.status_bar.showMessage(f"✅ {tracking_num} 已直接添加到汇总（待查询）", 3000)
+        else:
+            self.status_bar.showMessage("⚠️ 数据库未连接", 3000)
 
     def setup_database_tab(self):
         """设置数据库管理标签页"""
@@ -8989,10 +12478,39 @@ class ExpressQueryProGUI(QMainWindow):
         """
         
         results = self.user_manager.current_user_db.execute_query(query)
-        
+    
+        # 添加调试输出
+        # if DEBUG_MODE:
+        #     print(f"[加载汇总] 共查询到 {len(results)} 条记录")
+
         for record in results:
+            category = record.get('status_category', 'other')
+            # if DEBUG_MODE:
+            #     print(f"[加载汇总] 单号: {record.get('tracking_number', '')}, 分类: {category}")
             self.add_express_to_category(record)
-            
+    
+        # 添加调试输出
+        # if DEBUG_MODE:
+        #     for key, widget in self.category_widgets.items():
+        #         print(f"[加载汇总] 分类 {key}: {len(widget.express_items)} 个条目")
+        
+        # 强制刷新计数
+        # for widget in self.category_widgets.values():
+        #     widget.update_count()
+
+        # QTimer.singleShot(50, self._force_refresh_all_counts)
+
+        # 强制刷新所有分类的计数
+        for widget in self.category_widgets.values():
+            widget.update_count()
+
+    def _force_refresh_all_counts(self):
+        """强制刷新所有分类的计数"""
+        for widget in self.category_widgets.values():
+            widget.update_count()
+            # 强制处理待处理的事件
+            QApplication.processEvents()
+
     def add_express_to_category(self, record: Dict):
         """添加快递到对应分类"""
         category = record.get('status_category', 'other')
@@ -9037,6 +12555,19 @@ class ExpressQueryProGUI(QMainWindow):
         if not self.customer or not self.key:
             self.status_bar.showMessage("⚠️ 未配置API账号，请先在设置中添加账号", 3000)
             return
+    
+        # 显示当前使用的接口类型
+        if hasattr(self, 'api_endpoint_manager') and self.api_endpoint_manager:
+            endpoint = self.api_endpoint_manager.get_current_endpoint()
+            if endpoint:
+                endpoint_type = endpoint.get('endpoint_type', 'unknown')
+                endpoint_name = endpoint.get('name', '未知')
+                if endpoint_type == 'free':
+                    self.status_bar.showMessage(f"🔄 使用免费接口 [{endpoint_name}] 刷新 {tracking_num}...", 2000)
+                elif endpoint_type == 'paid':
+                    self.status_bar.showMessage(f"🔄 使用收费接口 [{endpoint_name}] 刷新 {tracking_num}...", 2000)
+                else:
+                    self.status_bar.showMessage(f"🔄 使用自定义接口 [{endpoint_name}] 刷新 {tracking_num}...", 2000)
         
         # 检查当前账号是否可用
         if self.api_account_manager:
@@ -9063,94 +12594,16 @@ class ExpressQueryProGUI(QMainWindow):
         thread.start()
         self.query_threads.append(thread)
         
-    def on_single_refresh_finished(self, result: dict, tracking_num: str):
-        """单个快递刷新完成 - 隐藏进度条"""
-        self.global_progress.setVisible(False)
 
-        if result.get('success'):
-            self.update_express_summary(result['data'])
-            self.status_bar.showMessage(f"{tracking_num} 刷新成功", 3000)
-            self.load_summary_data()
-            
-            if self.api_account_manager:
-                self.api_account_manager.increment_usage()
-                self.update_api_account_display()
-        else:
-            # 刷新失败，尝试切换账号重试
-            error_msg = result.get('error', '未知错误')
-            
-            if DEBUG_MODE:
-                print(f"[刷新失败] {tracking_num}: {error_msg}")
-            
-            if self.api_account_manager:
-                # 记录当前账号
-                old_account = self.api_account_manager.current_account
-                old_account_id = old_account.get('id') if old_account else None
-                old_account_name = old_account.get('account_name', '未知') if old_account else '无'
-                
-                if DEBUG_MODE:
-                    print(f"[刷新失败] 当前账号: {old_account_name}, 尝试切换...")
-                
-                # 尝试切换到下一个账号（强制切换）
-                if self.api_account_manager.switch_to_next_account(force_switch=True):
-                    new_account = self.api_account_manager.current_account
-                    new_account_id = new_account.get('id') if new_account else None
-                    new_account_name = new_account.get('account_name', '未知') if new_account else '无'
-                    
-                    if old_account_id != new_account_id:
-                        if DEBUG_MODE:
-                            print(f"[刷新失败] 切换到账号: {new_account_name}")
-                        
-                        if not self.load_current_api_account():
-                            self.global_progress.setVisible(False)
-                            self.status_bar.showMessage(f"{tracking_num} 刷新失败（切换账号失败）", 3000)
-                            return
-                        
-                        self.update_api_account_display()
-                        
-                        # 显示重试进度
-                        self.global_progress.setVisible(True)
-                        self.global_progress.setRange(0, 0)
-                        self.status_bar.showMessage(f"{tracking_num} 刷新失败，正在切换账号重试...")
-                        
-                        # 获取该快递的公司代码
-                        company_code = ""
-                        if self.user_manager.current_user_db:
-                            sql = "SELECT company_code FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
-                            query_result = self.user_manager.current_user_db.execute_query(sql, (tracking_num,))
-                            if query_result:
-                                company_code = query_result[0].get('company_code', '')
-                        
-                        # 用新账号重试
-                        thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
-                        thread.finished.connect(lambda r: self.on_single_refresh_retry_finished(r, tracking_num))
-                        thread.start()
-                        self.query_threads.append(thread)
-                        return
-                    else:
-                        if DEBUG_MODE:
-                            print(f"[刷新失败] 切换后账号未变化: {new_account_name}")
-                        self.status_bar.showMessage(f"{tracking_num} 刷新失败（无可用备用账号）", 3000)
-                else:
-                    if DEBUG_MODE:
-                        print("[刷新失败] switch_to_next_account 返回 False")
-                    self.status_bar.showMessage(f"{tracking_num} 刷新失败，无备用账号可切换", 3000)
-            else:
-                if DEBUG_MODE:
-                    print("[刷新失败] api_account_manager 为 None")
-                self.status_bar.showMessage(f"{tracking_num} 刷新失败: {error_msg}", 5000)
 
-        self.global_progress.setVisible(False)
-
-    def on_single_refresh_retry_finished(self, result: dict, tracking_num: str):
-        """单个快递刷新重试完成 - 隐藏进度条"""
+    def on_single_refresh_retry_finished(self, result, tracking_num):
+        """单个快递刷新重试完成"""
         self.global_progress.setVisible(False)
         if result.get('success'):
-            self.update_express_summary(result['data'])
+            # ========== 修改：只更新单个条目 ==========
+            self.update_single_express_item(tracking_num, result['data'])
             self.status_bar.showMessage(f"{tracking_num} 刷新成功（切换账号后）", 3000)
-            self.load_summary_data()
             
-            # 更新配额显示
             if self.api_account_manager:
                 self.api_account_manager.increment_usage()
                 self.update_api_account_display()
@@ -9165,33 +12618,7 @@ class ExpressQueryProGUI(QMainWindow):
         dialog = ExpressDetailDialog(express_id, tracking_num, self, self)
         dialog.exec()
         
-    def add_manual_express(self):
-        """手动添加快递 - 添加进度条"""
-        tracking_num = self.manual_tracking_input.text().strip()
-        if not tracking_num:
-            self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
-            return
-            
-        company_name = self.manual_company_combo.currentText()
-        company_code = self.company_codes.get(company_name, "")
-        
-        if self.user_manager.current_user_db:
-            check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
-            existing = self.user_manager.current_user_db.execute_query(check_sql, (tracking_num,))
-            if existing:
-                self.status_bar.showMessage("✅ 该快递单号已存在于汇总中", 3000)
-                return
-                
-        # 显示进度条
-        self.global_progress.setVisible(True)
-        self.global_progress.setRange(0, 0)  # 不确定进度模式
-        self.global_progress.setValue(0)
-        self.status_bar.showMessage(f"正在查询并添加 {tracking_num}...")
-        
-        thread = ExpressQueryThreadPro(tracking_num, company_code, self.customer, self.key)
-        thread.finished.connect(lambda r: self.on_manual_add_finished(r, tracking_num, company_code, company_name))
-        thread.start()
-        self.query_threads.append(thread)
+
 
     def batch_import_express(self):
         """批量导入快递单号"""
@@ -9282,7 +12709,7 @@ class ExpressQueryProGUI(QMainWindow):
         thread.start()
         self.query_threads.append(thread)
         
-    def on_batch_import_finished(self, result: dict, tracking_num: str):
+    def on_batch_import_finished(self, result, tracking_num):
         """单个批量导入完成"""
         item = self.batch_import_list[self.batch_import_index]
         
@@ -9297,18 +12724,18 @@ class ExpressQueryProGUI(QMainWindow):
             QTimer.singleShot(300, self.process_next_batch_import)
         else:
             error_msg = result.get('error', '未知错误')
-            
             retried = False
-            if self.api_account_manager:
-                # 尝试切换到下一个账号（强制切换）
-                if self.api_account_manager.switch_to_next_account(force_switch=True):
-                    self.load_current_api_account()
-                    # 用新账号重试这个单号
-                    thread = ExpressQueryThreadPro(tracking_num, item['company_code'], self.customer, self.key)
-                    thread.finished.connect(lambda r, num=tracking_num: self.on_batch_import_retry_finished(r, num, item))
-                    thread.start()
-                    self.query_threads.append(thread)
-                    retried = True
+            
+            # ========== 修复：只在额度/权限错误时才切换账号重试 ==========
+            if self._should_switch_account_on_error(error_msg) and self._try_switch_and_retry(tracking_num, item['company_code'], error_msg):
+                thread = ExpressQueryThreadPro(
+                    tracking_num, item['company_code'],
+                    self.customer, self.key
+                )
+                thread.finished.connect(lambda r, num=tracking_num, itm=item: self.on_batch_import_retry_finished(r, num, itm))
+                thread.start()
+                self.query_threads.append(thread)
+                retried = True
             
             if not retried:
                 self.batch_import_results.append({
@@ -9361,64 +12788,6 @@ class ExpressQueryProGUI(QMainWindow):
                 print(f"  ... 共 {len(failed_list)} 个失败")
 
 
-    def on_manual_add_finished(self, result: dict, tracking_num: str, company_code: str, company_name: str):
-        """手动添加完成"""
-        self.global_progress.setVisible(False)
-        
-        if result.get('success'):
-            is_pending = result.get('is_pending', False)
-            self.add_to_summary(result['data'], company_name)
-            self.manual_tracking_input.clear()
-            
-            if is_pending:
-                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总（等待揽件）", 5000)
-            else:
-                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总", 3000)
-            
-            self.load_summary_data()
-        else:
-            error_msg = result.get('error', '未知错误')
-            
-            if DEBUG_MODE:
-                print(f"手动添加失败：{error_msg}")
-            
-            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
-            
-            allow_add_keywords = ['没该功能权限', '权限', '单号不存在', '暂无轨迹', '暂无物流信息', '未揽件', '无物流']
-            should_offer_add = any(keyword in error_msg for keyword in allow_add_keywords)
-            
-            if should_offer_add:
-                # 这里需要用户选择，保留弹窗
-                reply = QMessageBox.question(
-                    self, "查询失败",
-                    f"API查询失败：{error_msg}\n\n"
-                    f"快递单号：{tracking_num}\n"
-                    f"快递公司：{company_name}\n\n"
-                    f"可能是单号有效但API暂时无法查询（如权限不足或未揽件）。\n\n"
-                    f"是否仍然将此单号添加到快递汇总？\n"
-                    f"（添加后可以稍后刷新获取物流信息）",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                
-                if reply == QMessageBox.Yes:
-                    pending_data = {
-                        'nu': tracking_num,
-                        'com': company_code,
-                        'state': '0',
-                        'data': [],
-                        'message': f'添加时查询失败：{error_msg}'
-                    }
-                    
-                    self.add_to_summary(pending_data, company_name)
-                    self.manual_tracking_input.clear()
-                    self.load_summary_data()
-                    
-                    self.status_bar.showMessage(f"✅ {tracking_num} 已强制添加到汇总（待查询）", 5000)
-                    return
-                else:
-                    self.status_bar.showMessage(f"🚫 已取消添加 {tracking_num}", 3000)
-            else:
-                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
             
     def add_to_summary(self, data: dict, company_name: str = None):
         """添加到汇总表"""
@@ -9447,33 +12816,49 @@ class ExpressQueryProGUI(QMainWindow):
         category = self.get_state_category(state, latest_context)
 
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+        # ========== 获取默认收件地址 ==========
+        # 优先使用地址管理器中的默认地址，其次使用用户设置中的默认地址
+        default_dest = ""
+        if hasattr(self, 'dest_address_manager'):
+            default_dest = self.dest_address_manager.get_default_address_text()
+        if not default_dest:
+            default_dest = self.user_manager.get_user_setting("default_dest_address", "")
         
         check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
         existing = self.user_manager.current_user_db.execute_query(check_sql, (tracking_num,))
         
         if existing:
+            # 更新现有记录，只设置 dest_address 如果原本为空
             sql = """
             UPDATE express_summary 
             SET company_code = ?, company_name = ?, status = ?, status_category = ?, 
-                latest_track = ?, result_data = ?, last_update = ?
+                latest_track = ?, result_data = ?, last_update = ?,
+                dest_address = CASE 
+                    WHEN dest_address IS NULL OR dest_address = '' THEN ? 
+                    ELSE dest_address 
+                END
             WHERE tracking_number = ? AND is_deleted = 0
             """
             self.user_manager.current_user_db.execute_update(
                 sql,
                 (company_code, company_name, state_text, category, latest_track, 
-                json.dumps(data, ensure_ascii=False), current_time, tracking_num)
+                json.dumps(data, ensure_ascii=False), current_time, 
+                default_dest, tracking_num)
             )
         else:
+            # 插入新记录，使用默认地址
             sql = """
             INSERT INTO express_summary 
             (tracking_number, company_code, company_name, status, status_category, 
-            latest_track, result_data, last_update, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            latest_track, result_data, dest_address, last_update, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             self.user_manager.current_user_db.execute_update(
                 sql,
                 (tracking_num, company_code, company_name, state_text, category,
-                latest_track, json.dumps(data, ensure_ascii=False), current_time, current_time)
+                latest_track, json.dumps(data, ensure_ascii=False), default_dest,
+                current_time, current_time)
             )
             
         # 记录时效数据（如果是已签收或已到驿站）
@@ -9481,16 +12866,13 @@ class ExpressQueryProGUI(QMainWindow):
             context = latest_context
             should_record = False
             
-            # 检查是否已签收
             if state == '3':
                 should_record = True
             elif self.delivery_estimator.is_signed(context):
                 should_record = True
-            # 检查是否已到驿站
             elif self.delivery_estimator.is_arrived_at_station(context):
                 should_record = True
                 
-            # 也检查完整的物流轨迹（有时候最新一条不是签收/驿站信息）
             if not should_record and track_list:
                 for track in track_list:
                     track_context = track.get('context', '')
@@ -9508,7 +12890,7 @@ class ExpressQueryProGUI(QMainWindow):
         if self.node_analyzer and track_list:
             self.node_analyzer.record_node_transit(data)
         
-    def update_express_summary(self, data: dict):
+    def update_express_summary(self, data: dict, auto_refresh_ui: bool = True):
         """更新快递汇总信息"""
         if not self.user_manager.current_user_db:
             return
@@ -9536,28 +12918,24 @@ class ExpressQueryProGUI(QMainWindow):
         WHERE tracking_number = ? AND is_deleted = 0
         """
         
-        if self.user_manager.current_user_db.execute_update(
+        self.user_manager.current_user_db.execute_update(
             sql,
             (state_text, category, latest_track, json.dumps(data, ensure_ascii=False), 
             current_time, tracking_num)
-        ):
-            self.load_summary_data()
-            
-        # 记录时效数据（如果是已签收或已到驿站）- 批量刷新时也会触发
+        )
+        
+        # 记录时效数据
         if self.delivery_estimator:
             context = latest_context
             should_record = False
             
-            # 检查是否已签收
             if state == '3':
                 should_record = True
             elif self.delivery_estimator.is_signed(context):
                 should_record = True
-            # 检查是否已到驿站
             elif self.delivery_estimator.is_arrived_at_station(context):
                 should_record = True
                 
-            # 也检查完整的物流轨迹
             if not should_record and track_list:
                 for track in track_list:
                     track_context = track.get('context', '')
@@ -9574,6 +12952,10 @@ class ExpressQueryProGUI(QMainWindow):
         # 记录节点运输时间
         if self.node_analyzer and track_list:
             self.node_analyzer.record_node_transit(data)
+        
+        # 只在需要时刷新界面
+        if auto_refresh_ui:
+            self.load_summary_data()
             
     def refresh_category(self, category_key: str):
         """刷新分类下所有快递 - 添加进度条"""
@@ -9617,16 +12999,125 @@ class ExpressQueryProGUI(QMainWindow):
         self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在刷新 {category_widget.category_name} 分类...")
         
+        # 保存正在刷新的分类key
+        self.refreshing_category_key = category_key
+        
         self.batch_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
-        self.batch_thread.finished.connect(self.on_batch_refresh_finished)
+        self.batch_thread.finished.connect(self.on_category_refresh_finished)
         self.batch_thread.progress.connect(self.on_batch_progress)
         self.batch_thread.start()
+
+
+    def on_category_refresh_finished(self, success_results, failed_items):
+        """分类刷新完成"""
+        self.global_progress.setVisible(False)
+        if hasattr(self, 'toolbar_progress'):
+            self.toolbar_progress.setVisible(False)
         
+        success_count = len(success_results)
+        fail_count = len(failed_items)
+        
+        # 批量更新数据库，不刷新界面
+        for result in success_results:
+            if result.get('success'):
+                self.update_express_summary(result['data'], auto_refresh_ui=False)
+        
+        # ========== 修复：只在额度/权限错误时才切换账号重试 ==========
+        category_name = self.category_widgets.get(self.refreshing_category_key, None)
+        cat_name = category_name.category_name if category_name else "分类"
+        
+        if failed_items:
+            # 检查第一个失败的错误是否值得切换账号
+            first_error = failed_items[0].get('error', '') if failed_items else ''
+            
+            if self._should_switch_account_on_error(first_error) and self._try_switch_and_retry("", "", first_error):
+                new_account = self.api_account_manager.get_current_account()
+                new_account_name = new_account.get('account_name', '未知') if new_account else '未知'
+                
+                reply = QMessageBox.question(
+                    self, "刷新完成",
+                    f"成功刷新 {success_count} 个快递，{fail_count} 个刷新失败。\n\n"
+                    f"已自动切换到备用账号：{new_account_name}\n\n"
+                    f"是否使用新账号重试失败的单号？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.pending_retry_failed_items = failed_items
+                    self.retry_category_failed_refresh(failed_items)
+                    return
+                else:
+                    self.load_summary_data()
+                    self.status_bar.showMessage(f"{cat_name} 刷新完成：成功 {success_count}，失败 {fail_count}（已切换账号）", 5000)
+            else:
+                self.load_summary_data()
+                self.status_bar.showMessage(f"✅ {cat_name} 刷新完成：成功 {success_count}，失败 {fail_count}", 5000)
+        else:
+            self.load_summary_data()
+            self.status_bar.showMessage(f"✅ {cat_name} 刷新完成：成功 {success_count} 个", 5000)
+
+    def retry_category_failed_refresh(self, failed_items: list):
+        """重试分类中失败的刷新"""
+        if not failed_items:
+            return
+        
+        self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 100)
+        self.global_progress.setValue(0)
+        self.status_bar.showMessage(f"正在使用新账号重试 {len(failed_items)} 个失败的单号...")
+        
+        tracking_list = [
+            {'tracking_number': item['tracking_number'], 'company_code': item.get('company_code', '')}
+            for item in failed_items
+        ]
+        
+        self.batch_retry_thread = BatchRefreshThread(tracking_list, self.customer, self.key)
+        self.batch_retry_thread.finished.connect(self.on_category_retry_finished)
+        self.batch_retry_thread.progress.connect(self.on_batch_progress)
+        self.batch_retry_thread.start()
+
+    def on_category_retry_finished(self, success_results: list, failed_items: list):
+        """分类重试刷新完成"""
+        self.global_progress.setVisible(False)
+        
+        success_count = len(success_results)
+        fail_count = len(failed_items)
+        
+        # 批量更新数据库，不刷新界面
+        for result in success_results:
+            if result.get('success'):
+                self.update_express_summary(result['data'], auto_refresh_ui=False)
+                if self.api_account_manager:
+                    self.api_account_manager.increment_usage()
+        
+        self.update_api_account_display()
+        
+        # 最后一次性刷新界面
+        self.load_summary_data()
+        
+        category_name = self.category_widgets.get(self.refreshing_category_key, None)
+        cat_name = category_name.category_name if category_name else "分类"
+        
+        if fail_count == 0:
+            self.status_bar.showMessage(f"✅ {cat_name} 重试成功！所有单号已刷新", 5000)
+        else:
+            self.status_bar.showMessage(f"⚠️ {cat_name} 重试完成：成功 {success_count}，仍有 {fail_count} 个失败", 5000)
+
     def refresh_all_express(self):
         """刷新所有快递 - 添加进度条"""
         if not self.customer or not self.key:
             self.status_bar.showMessage("⚠️ 未配置API账号，请先在设置中添加账号", 3000)
             return
+    
+        # 显示当前使用的接口类型
+        if hasattr(self, 'api_endpoint_manager') and self.api_endpoint_manager:
+            endpoint = self.api_endpoint_manager.get_current_endpoint()
+            if endpoint:
+                endpoint_type = endpoint.get('endpoint_type', 'unknown')
+                if endpoint_type == 'free':
+                    self.status_bar.showMessage("🔄 使用免费接口刷新所有快递...", 2000)
+                elif endpoint_type == 'paid':
+                    self.status_bar.showMessage("🔄 使用收费接口刷新所有快递...", 2000)
         
         # 检查当前账号是否可用
         if self.api_account_manager:
@@ -9675,7 +13166,7 @@ class ExpressQueryProGUI(QMainWindow):
             self.toolbar_progress.setFormat(f"%p%")
         self.status_bar.showMessage(message)
         
-    def on_batch_refresh_finished(self, success_results: list, failed_items: list):
+    def on_batch_refresh_finished(self, success_results, failed_items):
         """批量刷新完成"""
         self.global_progress.setVisible(False)
         if hasattr(self, 'toolbar_progress'):
@@ -9686,58 +13177,39 @@ class ExpressQueryProGUI(QMainWindow):
         
         for result in success_results:
             if result.get('success'):
-                self.update_express_summary(result['data'])
+                self.update_express_summary(result['data'], auto_refresh_ui=False)
         
-        if failed_items and self.api_account_manager:
-            if DEBUG_MODE:
-                print(f"[批量刷新] 有 {fail_count} 个单号刷新失败，尝试切换账号...")
+        # ========== 修复：只在额度/权限错误时才切换账号重试 ==========
+        if failed_items:
+            first_error = failed_items[0].get('error', '') if failed_items else ''
             
-            old_account = self.api_account_manager.current_account
-            old_account_id = old_account.get('id') if old_account else None
-            
-            if self.api_account_manager.switch_to_next_account(force_switch=True):
-                new_account = self.api_account_manager.current_account
-                new_account_id = new_account.get('id') if new_account else None
+            if self._should_switch_account_on_error(first_error) and self._try_switch_and_retry("", "", first_error):
+                new_account = self.api_account_manager.get_current_account()
+                new_account_name = new_account.get('account_name', '未知') if new_account else '未知'
                 
-                if old_account_id != new_account_id:
-                    if DEBUG_MODE:
-                        print(f"[批量刷新] 切换到账号: {new_account.get('account_name', '未知')}")
-                    
-                    if not self.load_current_api_account():
-                        self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（切换账号失败）", 5000)
-                        self.load_summary_data()
-                        return
-                    
-                    self.update_api_account_display()
-                    
-                    # 需要用户选择是否重试，保留弹窗
-                    reply = QMessageBox.question(
-                        self, "刷新完成",
-                        f"成功刷新 {success_count} 个快递，{fail_count} 个刷新失败。\n\n"
-                        f"已自动切换到备用账号，是否使用新账号重试失败的单号？",
-                        QMessageBox.Yes | QMessageBox.No
-                    )
-                    
-                    if reply == QMessageBox.Yes:
-                        self.retry_failed_refresh(failed_items)
-                        return
-                    else:
-                        self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（已切换账号）", 5000)
+                reply = QMessageBox.question(
+                    self, "刷新完成",
+                    f"成功刷新 {success_count} 个快递，{fail_count} 个刷新失败。\n\n"
+                    f"已自动切换到备用账号：{new_account_name}\n\n"
+                    f"是否使用新账号重试失败的单号？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.retry_failed_refresh(failed_items)
+                    return
                 else:
-                    if DEBUG_MODE:
-                        print("[批量刷新] 切换后账号未变化")
-                    self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（无可用备用账号）", 5000)
+                    self.load_summary_data()
+                    self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（已切换账号）", 5000)
             else:
-                if DEBUG_MODE:
-                    print("[批量刷新] switch_to_next_account 返回 False")
-                self.status_bar.showMessage(f"刷新完成：成功 {success_count}，失败 {fail_count}（无备用账号可切换）", 5000)
+                self.load_summary_data()
+                self.status_bar.showMessage(f"✅ 刷新完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
         else:
-            self.status_bar.showMessage(f"✅ 刷新完成：成功 {success_count} 个，失败 {fail_count} 个", 5000)
-        
-        self.load_summary_data()
+            self.load_summary_data()
+            self.status_bar.showMessage(f"✅ 刷新完成：成功 {success_count} 个", 5000)
 
     def retry_failed_refresh(self, failed_items: list):
-        """重试失败的刷新 - 添加进度条"""
+        """重试失败的刷新"""
         if not failed_items:
             return
         
@@ -9746,7 +13218,6 @@ class ExpressQueryProGUI(QMainWindow):
         self.global_progress.setValue(0)
         self.status_bar.showMessage(f"正在使用新账号重试 {len(failed_items)} 个失败的单号...")
         
-        # 转换为批量刷新需要的格式
         tracking_list = [
             {'tracking_number': item['tracking_number'], 'company_code': item.get('company_code', '')}
             for item in failed_items
@@ -9764,20 +13235,22 @@ class ExpressQueryProGUI(QMainWindow):
         success_count = len(success_results)
         fail_count = len(failed_items)
         
+        # 批量更新数据库，不刷新界面
         for result in success_results:
             if result.get('success'):
-                self.update_express_summary(result['data'])
+                self.update_express_summary(result['data'], auto_refresh_ui=False)
                 if self.api_account_manager:
                     self.api_account_manager.increment_usage()
         
         self.update_api_account_display()
         
+        # ========== 最后一次性刷新界面 ==========
+        self.load_summary_data()
+        
         if fail_count == 0:
             self.status_bar.showMessage(f"✅ 重试成功！所有单号已刷新", 5000)
         else:
             self.status_bar.showMessage(f"⚠️ 重试完成：成功 {success_count}，仍有 {fail_count} 个失败", 5000)
-        
-        self.load_summary_data()
         
     def on_category_collapse_changed(self, category_key: str, is_collapsed: bool):
         """分类折叠状态改变"""
@@ -9866,84 +13339,204 @@ class ExpressQueryProGUI(QMainWindow):
                 return name
         return code or "未知"
         
-    def query_express(self):
-        """查询快递"""
+    def query_express(self, verification_code: str = ""):
+        """查询快递 - 支持验证码"""
         tracking_num = self.tracking_num.text().strip()
         if not tracking_num:
             self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
             return
-            
-        if not self.customer or not self.key:
-            reply = QMessageBox.question(
-                self, "提示",
-                "未配置API账号，无法查询快递。是否现在添加账号？",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self.show_settings()
-            return
-    
-
-        # 检查当前账号是否可用
-        if self.api_account_manager:
-            # 先检查是否需要重置
-            self.api_account_manager.check_and_reset_daily_usage()
-            
-            if not self.api_account_manager.is_current_account_available():
-                # 尝试切换到下一个账号（正常切换，不强制）
-                if self.api_account_manager.switch_to_next_account(force_switch=False):
-                    self.load_current_api_account()
-                    usage_info = self.api_account_manager.get_usage_info()
-                    QMessageBox.information(self, "提示", 
-                        f"当前账号额度已用完，已自动切换到备用账号\n"
-                        f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}")
-                else:
-                    # 获取所有账号的使用情况
-                    accounts = self.api_account_manager.get_accounts()
-                    info_text = "所有账号今日额度都已用完：\n"
-                    for acc in accounts:
-                        info_text += f"  {acc['account_name']}: {acc['used_today']}/{acc['daily_limit']}\n"
-                    info_text += "\n请在明天0点后重试，或添加新的API账号。"
-                    QMessageBox.warning(self, "提示", info_text)
-                    return
-
-        if self.api_account_manager and not self.api_account_manager.is_current_account_available():
-            if self.api_account_manager.switch_to_next_account(force_switch=False):
-                self.load_current_api_account()
-                self.status_bar.showMessage("✅ 当前账号额度已用完，已自动切换到备用账号", 3000)
-            else:
-                self.status_bar.showMessage("⚠️ 所有账号今日额度都已用完，请明天再试", 3000)
-                return
-            
-        self.clear_results()
         
+        # 获取公司代码
         company_name = self.company_combo.currentText()
         company_code = self.company_codes.get(company_name, "")
+        
+        # 获取当前API接口
+        current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+        
+        # ========== 新增：免费接口需要具体的公司代码 ==========
+        if current_endpoint and current_endpoint.get('endpoint_type') == 'free':
+            if company_name == "自动识别" or not company_code:
+                # 免费接口也需要公司代码，先尝试自动识别
+                detected_code, detected_name = self.get_company_code_by_number(tracking_num)
+                if detected_code:
+                    company_code = detected_code
+                    company_name = detected_name
+                    # 更新下拉框显示
+                    if company_name in self.company_codes:
+                        self.company_combo.setCurrentText(company_name)
+                else:
+                    QMessageBox.warning(self, "提示", 
+                        "免费接口需要指定快递公司。\n\n"
+                        "自动识别未能匹配到快递公司，请手动选择快递公司后再查询。\n\n"
+                        "提示：\n"
+                        "• 顺丰单号通常以SF开头\n"
+                        "• 圆通单号通常以YT开头\n"
+                        "• 中通单号通常以ZT或7开头\n"
+                        "• 韵达单号通常以YD或1/4/5开头\n"
+                        "• 申通单号通常以ST或3/7/8开头\n"
+                        "• 极兔单号通常以JT开头")
+                    return
+        
+        # 检查接口类型并验证必要配置
+        if current_endpoint and current_endpoint.get('endpoint_type') == 'free':
+            # 免费接口不需要验证customer/key
+            pass
+        else:
+            if not self.customer or not self.key:
+                self.load_current_api_account()
+                if not self.customer or not self.key:
+                    reply = QMessageBox.question(
+                        self, "提示",
+                        "收费接口需要配置API账号。是否现在添加账号？\n\n"
+                        "或者您可以切换到免费接口使用（设置 → API接口）。",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    if reply == QMessageBox.Yes:
+                        self.show_settings()
+                    return
+        
+        # 检查当前账号是否可用（仅收费接口需要）
+        if current_endpoint and current_endpoint.get('endpoint_type') != 'free':
+            if self.api_account_manager:
+                self.api_account_manager.check_and_reset_daily_usage()
+                
+                if not self.api_account_manager.is_current_account_available():
+                    if self.api_account_manager.switch_to_next_account(force_switch=False):
+                        self.load_current_api_account()
+                        usage_info = self.api_account_manager.get_usage_info()
+                        QMessageBox.information(self, "提示", 
+                            f"当前账号额度已用完，已自动切换到备用账号\n"
+                            f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}")
+                    else:
+                        accounts = self.api_account_manager.get_accounts()
+                        info_text = "所有账号今日额度都已用完：\n"
+                        for acc in accounts:
+                            info_text += f"  {acc['account_name']}: {acc['used_today']}/{acc['daily_limit']}\n"
+                        info_text += "\n请在明天0点后重试，或添加新的API账号。"
+                        QMessageBox.warning(self, "提示", info_text)
+                        return
+        
+        # 清空之前的结果
+        self.clear_results()
         
         # 显示进度条
         self.query_btn.setEnabled(False)
         self.query_progress.setVisible(True)
         self.query_progress.setRange(0, 100)
-        self.status_label.setText("正在查询中，请稍候...")
-        self.status_bar.showMessage("正在查询...")
         
-        self.query_thread = ExpressQueryThreadPro(
-            tracking_num, company_code, 
-            self.customer, self.key
-        )
+        # 显示更详细的查询信息
+        if current_endpoint and current_endpoint.get('endpoint_type') == 'free':
+            self.status_label.setText(f"正在使用免费接口查询 {tracking_num}（{company_name}）...")
+            self.status_bar.showMessage(f"🆓 免费接口查询中: {tracking_num} ({company_name})")
+        else:
+            self.status_label.setText("正在查询中，请稍候...")
+            self.status_bar.showMessage("正在查询...")
+        
+        # 创建查询线程
+        if current_endpoint and current_endpoint.get('endpoint_type') == 'free':
+            self.query_thread = ExpressQueryThreadPro(
+                tracking_num, company_code, 
+                "", "", current_endpoint, auto_detect=True,
+                verification_code=verification_code
+            )
+        else:
+            self.query_thread = ExpressQueryThreadPro(
+                tracking_num, company_code, 
+                self.customer, self.key, current_endpoint,
+                verification_code=verification_code
+            )
+        
+        # 连接信号
         self.query_thread.finished.connect(self.on_query_finished)
         self.query_thread.progress.connect(self.query_progress.setValue)
+        self.query_thread.need_verification.connect(self.on_need_verification)
         self.query_thread.start()
         self.query_threads.append(self.query_thread)
+
+    
+    def on_need_verification(self, tracking_num: str, company_name: str, company_code: str):
+        """需要验证码时调用"""
+        # 保存待验证的信息
+        self.pending_verification = {
+            'tracking_num': tracking_num,
+            'company_name': company_name,
+            'company_code': company_code
+        }
         
-    def on_query_finished(self, result: dict):
+        # 显示验证码对话框
+        dialog = VerificationCodeDialog(tracking_num, company_name, self)
+        if dialog.exec() == QDialog.Accepted:
+            verification_code = dialog.get_verification_code()
+            
+            # 用验证码重新查询
+            self.status_bar.showMessage(f"正在使用验证码重新查询 {tracking_num}...")
+            
+            # 更新查询输入框
+            self.tracking_num.setText(tracking_num)
+            for name, code in self.company_codes.items():
+                if code == company_code:
+                    self.company_combo.setCurrentText(name)
+                    break
+            
+            # 重新查询（带验证码）
+            self.query_express(verification_code)
+        else:
+            self.status_bar.showMessage(f"已取消查询 {tracking_num}（需要验证）", 3000)
+            self.pending_verification = None
+        
+    def on_query_finished(self, result):
         """查询完成回调"""
         self.query_btn.setEnabled(True)
         self.query_progress.setVisible(False)
         
         if 'quota_info' in result:
             self.update_quota_info(result['quota_info'])
+        
+        # 检查是否需要验证码
+        if result.get('need_verification'):
+            if result.get('verification_failed'):
+                self.verification_retry_count += 1
+                
+                tracking_num = result.get('tracking_num', '')
+                company_code = result.get('company_code', '')
+                company_name = self.get_company_name(company_code)
+                
+                reply = QMessageBox.question(
+                    self, "验证失败",
+                    f"手机尾号验证失败，是否重新输入？\n\n"
+                    f"快递单号：{tracking_num}\n"
+                    f"快递公司：{company_name}\n"
+                    f"已尝试次数：{self.verification_retry_count}\n\n"
+                    f"💡 提示：请确认收件人手机尾号是否正确。",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    dialog = VerificationCodeDialog(tracking_num, company_name, self)
+                    if dialog.exec() == QDialog.Accepted:
+                        verification_code = dialog.get_verification_code()
+                        self.tracking_num.setText(tracking_num)
+                        for name, code in self.company_codes.items():
+                            if code == company_code:
+                                self.company_combo.setCurrentText(name)
+                                break
+                        self.query_express(verification_code)
+                    else:
+                        self.status_label.setText("查询取消（需要验证）")
+                        self.status_bar.showMessage(f"已取消查询 {tracking_num}", 3000)
+                        self.verification_retry_count = 0
+                else:
+                    self.status_label.setText("查询取消（需要验证）")
+                    self.status_bar.showMessage(f"已取消查询 {tracking_num}", 3000)
+                    self.verification_retry_count = 0
+                return
             
+            self.verification_retry_count = 0
+            return
+        
+        # 重置验证重试计数
+        self.verification_retry_count = 0
+        
         if result.get('success'):
             if self.api_account_manager:
                 self.api_account_manager.increment_usage()
@@ -9965,7 +13558,7 @@ class ExpressQueryProGUI(QMainWindow):
             self.add_to_summary(data)
             self.load_summary_data()
             
-            # 询问是否查看汇总（需要用户选择，保留弹窗）
+            # 询问是否查看汇总
             if is_pending:
                 reply = QMessageBox.question(
                     self, "添加成功",
@@ -9991,17 +13584,13 @@ class ExpressQueryProGUI(QMainWindow):
             company_name = self.company_combo.currentText()
             company_code = self.company_codes.get(company_name, "")
             
-            if DEBUG_MODE:
-                print(f"[查询失败]: {error_msg}")
-            
             self.status_label.setText(f"查询失败：{error_msg}")
-            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
             
+            # 判断是否应该提供"仍然添加"选项
             allow_add_keywords = ['没该功能权限', '权限', '单号不存在', '暂无轨迹', '暂无物流信息', '未揽件', '无物流']
             should_offer_add = any(keyword in error_msg for keyword in allow_add_keywords)
             
             if should_offer_add:
-                # 需要用户选择，保留弹窗
                 reply = QMessageBox.question(
                     self, "查询失败",
                     f"API查询失败：{error_msg}\n\n"
@@ -10027,10 +13616,7 @@ class ExpressQueryProGUI(QMainWindow):
                     
                     if self.user_manager.current_user_db:
                         self.user_manager.save_query_history(
-                            tracking_num,
-                            company_code,
-                            company_name,
-                            '待查询',
+                            tracking_num, company_code, company_name, '待查询',
                             json.dumps(pending_data, ensure_ascii=False),
                             result.get('quota_info', {}).get('remaining', 0)
                         )
@@ -10040,7 +13626,6 @@ class ExpressQueryProGUI(QMainWindow):
                     
                     self.clear_results()
                     
-                    # 询问是否查看汇总
                     view_reply = QMessageBox.question(
                         self, "添加成功",
                         f"快递单号 {tracking_num} 已添加到汇总。\n\n"
@@ -10049,69 +13634,337 @@ class ExpressQueryProGUI(QMainWindow):
                         f"是否切换到汇总标签查看？",
                         QMessageBox.Yes | QMessageBox.No
                     )
-                    
                     if view_reply == QMessageBox.Yes:
                         self.main_tab_widget.setCurrentIndex(0)
-                    
                     return
                 else:
                     self.status_bar.showMessage(f"🚫 已取消添加 {tracking_num}", 3000)
                     return
             
-            # 切换账号重试（需要用户选择，保留弹窗）
+            # ========== 修复：只在额度/权限错误时才切换账号 ==========
+            if self.api_account_manager:
+                self.api_account_manager.increment_usage()  # 即使失败也算使用次数
+                
+                if self._try_switch_and_retry(tracking_num, company_code, error_msg):
+                    new_account = self.api_account_manager.get_current_account()
+                    new_account_name = new_account.get('account_name', '未知') if new_account else '未知'
+                    
+                    reply = QMessageBox.question(
+                        self, "查询失败",
+                        f"查询失败：{error_msg}\n\n"
+                        f"已自动切换到备用账号：{new_account_name}\n\n"
+                        f"是否使用新账号重新查询？",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        QTimer.singleShot(100, self.query_express)
+                        return
+                    else:
+                        self.status_label.setText(f"查询失败：{error_msg}（已切换账号）")
+                        self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（已切换账号）", 5000)
+                else:
+                    self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+            else:
+                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+
+
+
+    def add_manual_express(self):
+        """手动添加快递"""
+        tracking_num = self.manual_tracking_input.text().strip()
+        if not tracking_num:
+            self.status_bar.showMessage("⚠️ 请输入快递单号！", 3000)
+            return
+            
+        company_name = self.manual_company_combo.currentText()
+        company_code = self.company_codes.get(company_name, "")
+        
+        if self.user_manager.current_user_db:
+            check_sql = "SELECT id FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+            existing = self.user_manager.current_user_db.execute_query(check_sql, (tracking_num,))
+            if existing:
+                self.status_bar.showMessage("✅ 该快递单号已存在于汇总中", 3000)
+                return
+        
+        # 保存待添加的信息
+        self.pending_manual_add = {
+            'tracking_num': tracking_num,
+            'company_name': company_name,
+            'company_code': company_code
+        }
+        
+        # 显示进度条
+        self.global_progress.setVisible(True)
+        self.global_progress.setRange(0, 0)
+        self.status_bar.showMessage(f"正在查询并添加 {tracking_num}...")
+        
+        # 创建查询线程
+        current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+        
+        thread = ExpressQueryThreadPro(
+            tracking_num, company_code, 
+            self.customer, self.key, current_endpoint
+        )
+        thread.finished.connect(self.on_manual_add_finished)
+        thread.need_verification.connect(self.on_manual_add_need_verification)
+        thread.start()
+        self.query_threads.append(thread)
+
+    def on_manual_add_need_verification(self, tracking_num: str, company_name: str, company_code: str):
+        """手动添加时需要验证码"""
+        self.global_progress.setVisible(False)
+        
+        # 保存待验证信息
+        self.pending_manual_add = {
+            'tracking_num': tracking_num,
+            'company_name': company_name,
+            'company_code': company_code
+        }
+        
+        dialog = VerificationCodeDialog(tracking_num, company_name, self)
+        if dialog.exec() == QDialog.Accepted:
+            verification_code = dialog.get_verification_code()
+            
+            # 重新查询
+            self.global_progress.setVisible(True)
+            self.global_progress.setRange(0, 0)
+            self.status_bar.showMessage(f"正在使用验证码查询 {tracking_num}...")
+            
+            current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+            
+            thread = ExpressQueryThreadPro(
+                tracking_num, company_code,
+                self.customer, self.key, current_endpoint,
+                verification_code=verification_code
+            )
+            thread.finished.connect(self.on_manual_add_finished)
+            thread.need_verification.connect(self.on_manual_add_need_verification)
+            thread.start()
+            self.query_threads.append(thread)
+        else:
+            self.status_bar.showMessage(f"已取消添加 {tracking_num}（需要验证）", 3000)
+            self.pending_manual_add = None
+
+    def on_manual_add_finished(self, result):
+        """手动添加完成"""
+        self.global_progress.setVisible(False)
+        
+        if result.get('need_verification'):
+            if result.get('verification_failed'):
+                tracking_num = self.pending_manual_add.get('tracking_num', '') if self.pending_manual_add else ''
+                company_name = self.pending_manual_add.get('company_name', '') if self.pending_manual_add else ''
+                
+                reply = QMessageBox.question(
+                    self, "验证失败",
+                    f"手机尾号验证失败，是否重新输入？\n\n"
+                    f"快递单号：{tracking_num}\n"
+                    f"快递公司：{company_name}",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    if self.pending_manual_add:
+                        dialog = VerificationCodeDialog(tracking_num, company_name, self)
+                        if dialog.exec() == QDialog.Accepted:
+                            verification_code = dialog.get_verification_code()
+                            
+                            self.global_progress.setVisible(True)
+                            self.global_progress.setRange(0, 0)
+                            
+                            current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+                            
+                            thread = ExpressQueryThreadPro(
+                                tracking_num, self.pending_manual_add['company_code'],
+                                self.customer, self.key, current_endpoint,
+                                verification_code=verification_code
+                            )
+                            thread.finished.connect(self.on_manual_add_finished)
+                            thread.start()
+                            self.query_threads.append(thread)
+                            return
+                else:
+                    self.status_bar.showMessage(f"已取消添加 {tracking_num}", 3000)
+            return
+        
+        tracking_num = self.pending_manual_add.get('tracking_num', '') if self.pending_manual_add else ''
+        company_name = self.pending_manual_add.get('company_name', '') if self.pending_manual_add else ''
+        company_code = self.pending_manual_add.get('company_code', '') if self.pending_manual_add else ''
+        
+        if result.get('success'):
+            is_pending = result.get('is_pending', False)
+            self.add_to_summary(result['data'], company_name)
+            self.manual_tracking_input.clear()
+            
+            if is_pending:
+                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总（等待揽件）", 5000)
+            else:
+                self.status_bar.showMessage(f"✅ {tracking_num} 已添加到汇总", 3000)
+            
+            self.load_summary_data()
+        else:
+            error_msg = result.get('error', '未知错误')
+            
+            allow_add_keywords = ['没该功能权限', '权限', '单号不存在', '暂无轨迹', '暂无物流信息', '未揽件', '无物流']
+            should_offer_add = any(keyword in error_msg for keyword in allow_add_keywords)
+            
+            if should_offer_add:
+                reply = QMessageBox.question(
+                    self, "查询失败",
+                    f"API查询失败：{error_msg}\n\n"
+                    f"快递单号：{tracking_num}\n"
+                    f"快递公司：{company_name}\n\n"
+                    f"可能是单号有效但API暂时无法查询。\n\n"
+                    f"是否仍然将此单号添加到快递汇总？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    pending_data = {
+                        'nu': tracking_num,
+                        'com': company_code,
+                        'state': '0',
+                        'data': [],
+                        'message': f'添加时查询失败：{error_msg}'
+                    }
+                    
+                    self.add_to_summary(pending_data, company_name)
+                    self.manual_tracking_input.clear()
+                    self.load_summary_data()
+                    
+                    self.status_bar.showMessage(f"✅ {tracking_num} 已强制添加到汇总（待查询）", 5000)
+                    return
+                else:
+                    self.status_bar.showMessage(f"🚫 已取消添加 {tracking_num}", 3000)
+            else:
+                # ========== 修复：只在额度/权限错误时才切换账号 ==========
+                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+        
+        self.pending_manual_add = None
+
+    def on_single_refresh_finished(self, result, tracking_num):
+        """单个快递刷新完成"""
+        self.global_progress.setVisible(False)
+        
+        # 检查是否需要验证码
+        if result.get('need_verification'):
+            if result.get('verification_failed'):
+                company_code = result.get('company_code', '')
+                company_name = self.get_company_name(company_code)
+                
+                reply = QMessageBox.question(
+                    self, "验证失败",
+                    f"刷新 {tracking_num} 需要验证手机尾号，验证失败。\n\n"
+                    f"快递公司：{company_name}\n\n"
+                    f"是否重新输入验证？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    dialog = VerificationCodeDialog(tracking_num, company_name, self)
+                    if dialog.exec() == QDialog.Accepted:
+                        verification_code = dialog.get_verification_code()
+                        
+                        company_code = ""
+                        if self.user_manager.current_user_db:
+                            sql = "SELECT company_code FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+                            query_result = self.user_manager.current_user_db.execute_query(sql, (tracking_num,))
+                            if query_result:
+                                company_code = query_result[0].get('company_code', '')
+                        
+                        self.global_progress.setVisible(True)
+                        self.global_progress.setRange(0, 0)
+                        self.status_bar.showMessage(f"正在使用验证码刷新 {tracking_num}...")
+                        
+                        current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+                        
+                        thread = ExpressQueryThreadPro(
+                            tracking_num, company_code,
+                            self.customer, self.key, current_endpoint,
+                            verification_code=verification_code
+                        )
+                        thread.finished.connect(lambda r: self.on_single_refresh_finished(r, tracking_num))
+                        thread.start()
+                        self.query_threads.append(thread)
+                        return
+            return
+        
+        if result.get('success'):
+            # ========== 修改：只更新单个条目 ==========
+            self.update_single_express_item(tracking_num, result['data'])
+            self.status_bar.showMessage(f"{tracking_num} 刷新成功", 3000)
+            
             if self.api_account_manager:
                 self.api_account_manager.increment_usage()
-                
-                old_account = self.api_account_manager.current_account
-                old_account_id = old_account.get('id') if old_account else None
-                old_account_name = old_account.get('account_name', '未知') if old_account else '无'
-                
-                if DEBUG_MODE:
-                    print(f"[查询失败] 当前账号: {old_account_name}, 尝试切换...")
-                
-                if self.api_account_manager.switch_to_next_account(force_switch=True):
-                    new_account = self.api_account_manager.current_account
-                    new_account_id = new_account.get('id') if new_account else None
-                    new_account_name = new_account.get('account_name', '未知') if new_account else '无'
-                    
-                    if old_account_id != new_account_id:
-                        if DEBUG_MODE:
-                            print(f"[查询失败] 切换到账号: {new_account_name}")
-                        
-                        if not self.load_current_api_account():
-                            self.status_label.setText(f"查询失败：{error_msg}（切换账号失败）")
-                            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（切换账号失败）", 5000)
-                            return
-                        
-                        self.update_api_account_display()
-                        usage_info = self.api_account_manager.get_usage_info()
-                        
-                        # 需要用户选择是否重试
-                        reply = QMessageBox.question(
-                            self, "自动切换账号",
-                            f"查询失败：{error_msg}\n\n"
-                            f"已自动切换到备用账号：{new_account_name}\n"
-                            f"新账号今日剩余次数：{usage_info['remaining']}/{usage_info['limit']}\n\n"
-                            f"是否使用新账号重新查询？",
-                            QMessageBox.Yes | QMessageBox.No
-                        )
-                        
-                        if reply == QMessageBox.Yes:
-                            QTimer.singleShot(100, self.query_express)
-                            return
-                        else:
-                            self.status_label.setText(f"查询失败：{error_msg}（已切换账号）")
-                            self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（已切换账号）", 5000)
-                    else:
-                        self.status_label.setText(f"查询失败：{error_msg}（无可用备用账号）")
-                        self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（无可用备用账号）", 5000)
-                else:
-                    self.status_label.setText(f"查询失败：{error_msg}（无备用账号）")
-                    self.status_bar.showMessage(f"❌ 查询失败：{error_msg}（无备用账号）", 5000)
-            else:
-                self.status_label.setText(f"查询失败：{error_msg}")
-                self.status_bar.showMessage(f"❌ 查询失败：{error_msg}", 5000)
+                self.update_api_account_display()
+        else:
+            error_msg = result.get('error', '未知错误')
             
+            # ========== 修复：只在需要时切换账号 ==========
+            if self._try_switch_and_retry(tracking_num, "", error_msg):
+                new_account = self.api_account_manager.get_current_account()
+                new_account_name = new_account.get('account_name', '未知') if new_account else '未知'
+                
+                reply = QMessageBox.question(
+                    self, "刷新失败",
+                    f"{tracking_num} 刷新失败：{error_msg}\n\n"
+                    f"已自动切换到备用账号：{new_account_name}\n\n"
+                    f"是否使用新账号重试？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # 获取公司代码
+                    company_code = ""
+                    if self.user_manager.current_user_db:
+                        sql = "SELECT company_code FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+                        query_result = self.user_manager.current_user_db.execute_query(sql, (tracking_num,))
+                        if query_result:
+                            company_code = query_result[0].get('company_code', '')
+                    
+                    self.global_progress.setVisible(True)
+                    self.global_progress.setRange(0, 0)
+                    self.status_bar.showMessage(f"{tracking_num} 刷新失败，正在切换账号重试...")
+                    
+                    current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+                    
+                    thread = ExpressQueryThreadPro(
+                        tracking_num, company_code,
+                        self.customer, self.key, current_endpoint
+                    )
+                    thread.finished.connect(lambda r: self.on_single_refresh_retry_finished(r, tracking_num))
+                    thread.start()
+                    self.query_threads.append(thread)
+                    return
+                else:
+                    self.status_bar.showMessage(f"{tracking_num} 刷新失败（已切换账号）", 3000)
+            else:
+                # 普通错误或无法切换，不强制切换
+                self.status_bar.showMessage(f"{tracking_num} 刷新失败: {error_msg}", 5000)
+
+
+
+    def on_single_refresh_need_verification(self, tracking_num: str, company_name: str, company_code: str):
+        """单个刷新需要验证码"""
+        dialog = VerificationCodeDialog(tracking_num, company_name, self)
+        if dialog.exec() == QDialog.Accepted:
+            verification_code = dialog.get_verification_code()
+            
+            self.global_progress.setVisible(True)
+            self.global_progress.setRange(0, 0)
+            self.status_bar.showMessage(f"正在使用验证码刷新 {tracking_num}...")
+            
+            current_endpoint = self.api_endpoint_manager.get_current_endpoint() if self.api_endpoint_manager else None
+            
+            thread = ExpressQueryThreadPro(
+                tracking_num, company_code,
+                self.customer, self.key, current_endpoint,
+                verification_code=verification_code
+            )
+            thread.finished.connect(lambda r: self.on_single_refresh_finished(r, tracking_num))
+            thread.start()
+            self.query_threads.append(thread)
+
     def save_query_to_history(self, data: dict, quota_info: dict):
         """保存查询到历史"""
         if self.user_manager.current_user_db:
@@ -11271,6 +15124,572 @@ class ExpressQueryProGUI(QMainWindow):
         self._scroll_animations = [a for a in self._scroll_animations if a.state() == QPropertyAnimation.Running]
         self._scroll_animations.append(animation)
 
+    def refresh_api_endpoint(self):
+        """刷新API接口显示（供设置对话框调用）"""
+        if hasattr(self, 'api_endpoint_manager'):
+            endpoint = self.api_endpoint_manager.get_current_endpoint()
+            if endpoint:
+                endpoint_type = endpoint.get('endpoint_type', 'unknown')
+                if endpoint_type == 'free':
+                    self.status_bar.showMessage("✅ 当前使用免费接口，无需API账号", 3000)
+                elif endpoint_type == 'paid':
+                    self.status_bar.showMessage("✅ 当前使用收费接口", 3000)
+                else:
+                    self.status_bar.showMessage(f"✅ 当前使用{endpoint.get('name', '自定义接口')}", 3000)
+            self.update_api_account_display()
+            self.update_api_endpoint_display()  
+
+    def update_api_endpoint_display(self):
+        """更新API接口状态显示"""
+        if hasattr(self, 'api_endpoint_manager') and self.api_endpoint_manager:
+            endpoint = self.api_endpoint_manager.get_current_endpoint()
+            if endpoint:
+                endpoint_type = endpoint.get('endpoint_type', 'unknown')
+                endpoint_name = endpoint.get('name', '未知接口')
+                
+                # 根据接口类型设置不同的显示样式
+                if endpoint_type == 'free':
+                    self.api_endpoint_status.setText(f"🆓 免费接口")
+                    self.api_endpoint_status.setStyleSheet("""
+                        font-weight: bold;
+                        padding: 2px 8px;
+                        border-radius: 12px;
+                        margin: 0 5px;
+                        background-color: #E8F5E9;
+                        color: #2E7D32;
+                    """)
+                    self.api_endpoint_status.setToolTip(f"当前使用：{endpoint_name}\n免费接口无需API账号，但有频率限制")
+                elif endpoint_type == 'paid':
+                    self.api_endpoint_status.setText(f"💰 收费接口")
+                    self.api_endpoint_status.setStyleSheet("""
+                        font-weight: bold;
+                        padding: 2px 8px;
+                        border-radius: 12px;
+                        margin: 0 5px;
+                        background-color: #FFF3E0;
+                        color: #E65100;
+                    """)
+                    self.api_endpoint_status.setToolTip(f"当前使用：{endpoint_name}\n收费接口需要配置API账号，稳定性高")
+                else:
+                    self.api_endpoint_status.setText(f"🔧 自定义接口")
+                    self.api_endpoint_status.setStyleSheet("""
+                        font-weight: bold;
+                        padding: 2px 8px;
+                        border-radius: 12px;
+                        margin: 0 5px;
+                        background-color: #E3F2FD;
+                        color: #1565C0;
+                    """)
+                    self.api_endpoint_status.setToolTip(f"当前使用：{endpoint_name}\n自定义API接口")
+            else:
+                self.api_endpoint_status.setText("❓ 无接口")
+                self.api_endpoint_status.setStyleSheet("""
+                    font-weight: bold;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    margin: 0 5px;
+                    background-color: #FFEBEE;
+                    color: #C62828;
+                """)
+                self.api_endpoint_status.setToolTip("未配置API接口，请检查设置")
+
+    def update_proxy_settings(self):
+        """更新代理设置（供设置对话框调用）"""
+        self.load_proxy_settings()
+        
+        # 通知所有已打开的详情对话框重新加载地图（应用新代理）
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, ExpressDetailDialog):
+                widget.refresh_map()
+        
+        self.status_bar.showMessage("✅ 代理设置已更新", 2000)
+
+    def setup_dest_address_tab(self):
+        """设置收件地址管理标签页"""
+        layout = QVBoxLayout(self.dest_address_tab)
+        layout.setSpacing(10)
+        
+        # 初始化地址管理器
+        self.dest_address_manager = DestAddressManager(self.current_user_db, self)
+        
+        # 顶部工具栏
+        toolbar = QHBoxLayout()
+        
+        # 当前默认地址显示
+        self.current_default_label = QLabel()
+        self.update_default_address_display()
+        toolbar.addWidget(self.current_default_label)
+        
+        toolbar.addStretch()
+        
+        # 从历史站点导入按钮
+        import_sites_btn = QPushButton("📍 从历史站点导入")
+        import_sites_btn.setToolTip("从已签收快递的物流轨迹中提取站点，添加到地址列表")
+        import_sites_btn.clicked.connect(self.import_sites_from_history)
+        import_sites_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.PURPLE_LAVENDER.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.PURPLE_WISTERIA.name()};
+            }}
+        """)
+        toolbar.addWidget(import_sites_btn)
+        
+        # 添加自定义地址按钮
+        add_custom_btn = QPushButton("✏️ 添加自定义地址")
+        add_custom_btn.clicked.connect(self.add_custom_dest_address)
+        add_custom_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.BLUE_SKY.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.BLUE_LAVENDER.name()};
+            }}
+        """)
+        toolbar.addWidget(add_custom_btn)
+        
+        layout.addLayout(toolbar)
+        
+        # 说明信息
+        info_label = QLabel(
+            "💡 说明：设置收件地址后，未单独设置收件地址的快递将自动使用默认地址进行送达时间预估。\n"
+            "   可以添加多个地址，设置其中一个为默认。站点列表从历史快递的物流轨迹中自动收集。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; padding: 5px; background-color: {MacaronColors.NEUTRAL_CREAM.name()}; border-radius: 5px;")
+        layout.addWidget(info_label)
+        
+        # 地址列表
+        list_group = QGroupBox("收件地址列表")
+        list_layout = QVBoxLayout()
+        
+        self.dest_table = QTableWidget()
+        self.dest_table.setColumnCount(6)
+        self.dest_table.setHorizontalHeaderLabels(["默认", "名称", "地址", "类型", "添加时间", "操作"])
+        self.dest_table.horizontalHeader().setStretchLastSection(True)
+        self.dest_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.dest_table.setAlternatingRowColors(True)
+        self.dest_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        
+        # 设置列宽
+        self.dest_table.setColumnWidth(0, 60)
+        self.dest_table.setColumnWidth(1, 120)
+        self.dest_table.setColumnWidth(2, 250)
+        self.dest_table.setColumnWidth(3, 80)
+        self.dest_table.setColumnWidth(4, 150)
+        
+        list_layout.addWidget(self.dest_table)
+        list_group.setLayout(list_layout)
+        layout.addWidget(list_group)
+        
+        # 快捷操作按钮
+        quick_layout = QHBoxLayout()
+        
+        apply_to_all_btn = QPushButton("📌 应用到所有未设置的快递")
+        apply_to_all_btn.setToolTip("将默认地址应用到所有未设置收件地址的快递")
+        apply_to_all_btn.clicked.connect(self.apply_default_to_all)
+        apply_to_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.ORANGE_PEACH.name()};
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.ORANGE_APRICOT.name()};
+            }}
+        """)
+        quick_layout.addWidget(apply_to_all_btn)
+        
+        quick_layout.addStretch()
+        
+        refresh_btn = QPushButton("🔄 刷新列表")
+        refresh_btn.clicked.connect(self.refresh_dest_table)
+        quick_layout.addWidget(refresh_btn)
+        
+        layout.addLayout(quick_layout)
+        
+        # 加载数据
+        self.refresh_dest_table()
+
+    def update_default_address_display(self):
+        """更新默认地址显示"""
+        if hasattr(self, 'dest_address_manager'):
+            default = self.dest_address_manager.get_default_address()
+            if default:
+                self.current_default_label.setText(
+                    f"📮 当前默认地址: {default.get('name', '')} - {default.get('address', '')[:30]}..."
+                )
+                self.current_default_label.setStyleSheet(f"color: {MacaronColors.TEXT_DARK.name()}; font-weight: bold;")
+            else:
+                self.current_default_label.setText("⚠️ 未设置默认收件地址")
+                self.current_default_label.setStyleSheet(f"color: {MacaronColors.RED_CORAL.name()};")
+
+    def refresh_dest_table(self):
+        """刷新地址表格"""
+        if not hasattr(self, 'dest_address_manager'):
+            return
+        
+        addresses = self.dest_address_manager.get_all_addresses()
+        self.dest_table.setRowCount(len(addresses))
+        
+        type_names = {
+            'custom': '自定义',
+            'site': '历史站点',
+        }
+        
+        for row, addr in enumerate(addresses):
+            # 默认标记
+            is_default = addr.get('is_default', 0) == 1
+            default_item = QTableWidgetItem("✅ 默认" if is_default else "")
+            if is_default:
+                default_item.setForeground(QColor(0, 150, 0))
+            self.dest_table.setItem(row, 0, default_item)
+            
+            # 名称
+            self.dest_table.setItem(row, 1, QTableWidgetItem(addr.get('name', '')))
+            
+            # 地址
+            address = addr.get('address', '')
+            display_address = address[:40] + '...' if len(address) > 40 else address
+            self.dest_table.setItem(row, 2, QTableWidgetItem(display_address))
+            
+            # 类型
+            addr_type = addr.get('address_type', 'custom')
+            type_item = QTableWidgetItem(type_names.get(addr_type, addr_type))
+            if addr_type == 'site':
+                type_item.setForeground(QColor(100, 100, 200))
+            self.dest_table.setItem(row, 3, type_item)
+            
+            # 添加时间
+            created_at = addr.get('created_at', '')
+            if created_at:
+                try:
+                    dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                    created_at = dt.strftime('%Y-%m-%d %H:%M')
+                except:
+                    pass
+            self.dest_table.setItem(row, 4, QTableWidgetItem(created_at))
+            
+            # 操作按钮
+            btn_widget = QWidget()
+            btn_layout = QHBoxLayout()
+            btn_layout.setContentsMargins(2, 2, 2, 2)
+            btn_layout.setSpacing(2)
+            
+            addr_id = addr['id']
+            
+            if not is_default:
+                set_default_btn = QPushButton("设为默认")
+                set_default_btn.setToolTip("将此地址设为默认收件地址")
+                set_default_btn.clicked.connect(lambda checked, aid=addr_id: self.set_default_dest_address(aid))
+                btn_layout.addWidget(set_default_btn)
+            
+            edit_btn = QPushButton("编辑")
+            edit_btn.clicked.connect(lambda checked, a=addr: self.edit_dest_address(a))
+            btn_layout.addWidget(edit_btn)
+            
+            delete_btn = QPushButton("删除")
+            delete_btn.clicked.connect(lambda checked, aid=addr_id: self.delete_dest_address(aid))
+            btn_layout.addWidget(delete_btn)
+            
+            if row > 0:
+                up_btn = QPushButton("↑")
+                up_btn.setToolTip("上移")
+                up_btn.setFixedWidth(25)
+                up_btn.clicked.connect(lambda checked, aid=addr_id: self.move_dest_address_up(aid))
+                btn_layout.addWidget(up_btn)
+            
+            if row < len(addresses) - 1:
+                down_btn = QPushButton("↓")
+                down_btn.setToolTip("下移")
+                down_btn.setFixedWidth(25)
+                down_btn.clicked.connect(lambda checked, aid=addr_id: self.move_dest_address_down(aid))
+                btn_layout.addWidget(down_btn)
+            
+            btn_widget.setLayout(btn_layout)
+            self.dest_table.setCellWidget(row, 5, btn_widget)
+        
+        self.update_default_address_display()
+
+    def import_sites_from_history(self):
+        """从历史站点导入"""
+        # 显示进度
+        self.status_bar.showMessage("正在收集历史站点...")
+        QApplication.processEvents()
+        
+        sites = self.dest_address_manager.collect_sites_from_history()
+        
+        if not sites:
+            QMessageBox.information(self, "提示", "未找到任何历史站点数据")
+            self.status_bar.showMessage("就绪", 2000)
+            return
+        
+        # 获取已有地址
+        existing_addresses = set()
+        for addr in self.dest_address_manager.get_all_addresses():
+            existing_addresses.add(addr.get('address', ''))
+        
+        # 过滤出新站点
+        new_sites = [s for s in sites if s not in existing_addresses]
+        
+        if not new_sites:
+            QMessageBox.information(self, "提示", f"共找到 {len(sites)} 个站点，但都已存在于地址列表中")
+            self.status_bar.showMessage("就绪", 2000)
+            return
+        
+        # 显示选择对话框
+        dialog = SiteImportDialog(new_sites, self)
+        if dialog.exec() != QDialog.Accepted:
+            self.status_bar.showMessage("就绪", 2000)
+            return
+        
+        selected_sites = dialog.get_selected_sites()
+        
+        if not selected_sites:
+            self.status_bar.showMessage("就绪", 2000)
+            return
+        
+        # 导入选中的站点
+        imported = 0
+        for site in selected_sites:
+            # 生成名称（取站点前20个字符）
+            name = site[:20] + ('...' if len(site) > 20 else '')
+            if self.dest_address_manager.add_address(name, site, 'site'):
+                imported += 1
+        
+        self.refresh_dest_table()
+        self.status_bar.showMessage(f"✅ 已导入 {imported} 个站点", 3000)
+
+    def add_custom_dest_address(self):
+        """添加自定义地址"""
+        dialog = DestAddressEditDialog(self, None)
+        if dialog.exec() == QDialog.Accepted:
+            name, address = dialog.get_data()
+            if self.dest_address_manager.add_address(name, address, 'custom'):
+                self.refresh_dest_table()
+                self.status_bar.showMessage(f"✅ 已添加地址: {name}", 2000)
+
+    def edit_dest_address(self, addr: Dict):
+        """编辑地址"""
+        dialog = DestAddressEditDialog(self, addr)
+        if dialog.exec() == QDialog.Accepted:
+            name, address = dialog.get_data()
+            if self.dest_address_manager.update_address(addr['id'], name, address):
+                self.refresh_dest_table()
+                self.status_bar.showMessage(f"✅ 已更新地址: {name}", 2000)
+
+    def delete_dest_address(self, addr_id: int):
+        """删除地址"""
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除此收件地址吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.dest_address_manager.delete_address(addr_id):
+                self.refresh_dest_table()
+                self.status_bar.showMessage("✅ 地址已删除", 2000)
+
+    def set_default_dest_address(self, addr_id: int):
+        """设为默认地址"""
+        if self.dest_address_manager.set_default(addr_id):
+            self.refresh_dest_table()
+            self.status_bar.showMessage("✅ 已设为默认收件地址", 2000)
+
+    def move_dest_address_up(self, addr_id: int):
+        """上移地址"""
+        if self.dest_address_manager.move_up(addr_id):
+            self.refresh_dest_table()
+
+    def move_dest_address_down(self, addr_id: int):
+        """下移地址"""
+        if self.dest_address_manager.move_down(addr_id):
+            self.refresh_dest_table()
+
+    def apply_default_to_all(self):
+        """将默认地址应用到所有未设置的快递"""
+        default = self.dest_address_manager.get_default_address()
+        if not default:
+            QMessageBox.warning(self, "提示", "请先设置默认收件地址")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认应用",
+            f"确定要将默认地址应用到所有未设置收件地址的快递吗？\n\n"
+            f"默认地址: {default.get('name')} - {default.get('address')}\n\n"
+            f"此操作将更新所有 dest_address 为空的快递记录。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        sql = """
+        UPDATE express_summary 
+        SET dest_address = ?, last_update = ?
+        WHERE (dest_address IS NULL OR dest_address = '') AND is_deleted = 0
+        """
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        if self.current_user_db:
+            self.current_user_db.execute_update(sql, (default['address'], current_time))
+            self.load_summary_data()
+            self.status_bar.showMessage("✅ 已将默认地址应用到所有未设置的快递", 3000)
+
+    def _should_switch_account_on_error(self, error_msg: str) -> bool:
+        """判断错误信息是否需要切换账号"""
+        if not error_msg:
+            return False
+        
+        error_lower = error_msg.lower()
+        
+        # 需要切换账号的错误特征
+        switch_keywords = [
+            # 额度相关
+            '额度已用完', 'quota exceeded', 'rate limit', '频率限制',
+            '今日次数已用完', '超过限制', '请求过于频繁', 'daily limit',
+            'too many requests', '请求次数超限',
+            # 权限/认证相关
+            '没该功能权限', '无权限', '认证失败', 'auth failed',
+            'key invalid', 'customer invalid', '签名错误', 'sign error',
+            '账号过期', 'account expired', '未开通', 'no permission',
+            '权限不足', 'insufficient permissions',
+        ]
+        
+        for keyword in switch_keywords:
+            if keyword in error_lower:
+                return True
+        
+        # 检查当前账号是否确实额度用完
+        if self.api_account_manager:
+            if not self.api_account_manager.is_current_account_available():
+                return True
+        
+        return False
+
+
+    def _try_switch_and_retry(self, tracking_num: str, company_code: str = "", 
+                            error_msg: str = "") -> bool:
+        """
+        尝试切换账号并询问是否重试
+        返回 True 表示已发起重试，False 表示不重试
+        """
+        if not self._should_switch_account_on_error(error_msg):
+            return False
+        
+        if not self.api_account_manager:
+            return False
+        
+        old_account = self.api_account_manager.current_account
+        old_account_id = old_account.get('id') if old_account else None
+        
+        if not self.api_account_manager.switch_to_next_account(force_switch=True):
+            return False
+        
+        new_account = self.api_account_manager.current_account
+        new_account_id = new_account.get('id') if new_account else None
+        
+        if old_account_id == new_account_id:
+            return False
+        
+        if not self.load_current_api_account():
+            self.status_bar.showMessage(f"切换账号失败", 3000)
+            return False
+        
+        self.update_api_account_display()
+        
+        return True
+
+    def update_single_express_item(self, tracking_num: str, data: dict):
+        """更新单个快递条目（不重建整个列表）"""
+        if not self.user_manager.current_user_db:
+            return
+        
+        # 更新数据库
+        state = str(data.get('state', ''))
+        state_text = self.get_state_text(state)
+        
+        track_list = data.get('data', [])
+        latest_track = ''
+        latest_context = ''
+        if track_list:
+            latest = track_list[0]
+            latest_track = f"[{latest.get('time', '')}] {latest.get('context', '')}"
+            latest_context = latest.get('context', '')
+        
+        category = self.get_state_category(state, latest_context)
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 获取旧的分类
+        old_category = None
+        sql_old = "SELECT status_category FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+        old_result = self.user_manager.current_user_db.execute_query(sql_old, (tracking_num,))
+        if old_result:
+            old_category = old_result[0].get('status_category', '')
+        
+        # 更新数据库
+        sql = """
+        UPDATE express_summary 
+        SET status = ?, status_category = ?, latest_track = ?, 
+            result_data = ?, last_update = ?
+        WHERE tracking_number = ? AND is_deleted = 0
+        """
+        self.user_manager.current_user_db.execute_update(
+            sql,
+            (state_text, category, latest_track, 
+            json.dumps(data, ensure_ascii=False), current_time, tracking_num)
+        )
+        
+        # 记录时效数据
+        if self.delivery_estimator:
+            context = latest_context
+            should_record = (state == '3' or 
+                            self.delivery_estimator.is_signed(context) or 
+                            self.delivery_estimator.is_arrived_at_station(context))
+            if should_record:
+                self.delivery_estimator.record_delivery(data)
+        
+        # 记录节点运输时间
+        if self.node_analyzer and track_list:
+            self.node_analyzer.record_node_transit(data)
+        
+        # ========== 更新界面：只更新对应的条目 ==========
+        if old_category and old_category != category:
+            # 分类变了，需要从旧分类移除，添加到新分类
+            if old_category in self.category_widgets:
+                for item in self.category_widgets[old_category].express_items[:]:
+                    if item.express_data.get('tracking_number', '') == tracking_num:
+                        self.category_widgets[old_category].remove_express_item(item)
+                        break
+            
+            # 需要新的 express_data 来创建或移动条目
+            # 从数据库获取最新数据
+            sql_new = "SELECT * FROM express_summary WHERE tracking_number = ? AND is_deleted = 0"
+            new_record = self.user_manager.current_user_db.execute_query(sql_new, (tracking_num,))
+            if new_record:
+                self.add_express_to_category(new_record[0])
+        else:
+            # 分类没变，只更新条目内容
+            target_category = category if category in self.category_widgets else 'other'
+            widget = self.category_widgets[target_category]
+            
+            found = False
+            for item in widget.express_items:
+                if item.express_data.get('tracking_number', '') == tracking_num:
+                    item.update_from_data(data)
+                    found = True
+                    break
+            
+            # 如果没找到（可能在过滤中被隐藏了），则重新加载汇总
+            if not found:
+                self.load_summary_data()
+        
+        # 更新分类计数
+        for w in self.category_widgets.values():
+            w.update_count()
+
+
 
 class SettingsDialogPro(QDialog):
     """设置对话框 - 多标签页版本"""
@@ -11278,7 +15697,15 @@ class SettingsDialogPro(QDialog):
     def __init__(self, parent: ExpressQueryProGUI):
         super().__init__(parent)
         self.parent = parent
+        # ===== 设置实时自动保存（防抖 400ms） =====
+        self._loading = True  # 加载标志：加载/恢复设置期间不触发自动保存
+        self._settings_save_timer = QTimer(self)
+        self._settings_save_timer.setSingleShot(True)
+        self._settings_save_timer.setInterval(400)
+        self._settings_save_timer.timeout.connect(self._save_settings_now)
         self.init_ui()
+        self._loading = False
+        self._connect_autosave()
         self.setStyleSheet(MacaronStyle.get_main_style())
         
     def init_ui(self):
@@ -11312,6 +15739,16 @@ class SettingsDialogPro(QDialog):
         self.setup_advanced_tab()
         self.tab_widget.addTab(self.advanced_tab, "⚙️ 高级")
         
+        # ========== 标签页5：API接口 ==========
+        self.api_endpoint_tab = QWidget()
+        self.setup_api_endpoint_tab()
+        self.tab_widget.addTab(self.api_endpoint_tab, "🌐 API接口")
+    
+        # ========== 标签页6：代理设置 ==========
+        self.proxy_tab = QWidget()
+        self.setup_proxy_tab()
+        self.tab_widget.addTab(self.proxy_tab, "🔀 代理")
+
         layout.addWidget(self.tab_widget)
         
         # 底部按钮
@@ -11334,7 +15771,7 @@ class SettingsDialogPro(QDialog):
         btn_layout.addStretch()
         
         close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
+        close_btn.clicked.connect(self._on_close)
         btn_layout.addWidget(close_btn)
         
         layout.addLayout(btn_layout)
@@ -11589,7 +16026,35 @@ class SettingsDialogPro(QDialog):
         
         debug_group.setLayout(debug_layout)
         layout.addWidget(debug_group)
+    
+        # ========== 新增：默认收件地址设置 ==========
+        dest_group = QGroupBox("默认收件地址")
+        dest_layout = QVBoxLayout()
         
+        dest_info = QLabel("设置默认收件地址后，新添加的快递会自动使用此地址进行送达时间预估")
+        dest_info.setWordWrap(True)
+        dest_info.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px; padding: 5px;")
+        dest_layout.addWidget(dest_info)
+        
+        dest_input_layout = QHBoxLayout()
+        dest_input_layout.addWidget(QLabel("默认地址:"))
+        
+        self.default_dest_edit = QLineEdit()
+        self.default_dest_edit.setPlaceholderText("例如：北京市朝阳区 或 北京转运中心")
+        self.default_dest_edit.setToolTip("输入您的常用收件地址，新添加快递时会自动关联")
+        dest_input_layout.addWidget(self.default_dest_edit)
+        
+        # 添加清除按钮
+        clear_dest_btn = QPushButton("清除")
+        clear_dest_btn.setToolTip("清除默认收件地址")
+        clear_dest_btn.clicked.connect(lambda: self.default_dest_edit.clear())
+        dest_input_layout.addWidget(clear_dest_btn)
+        
+        dest_layout.addLayout(dest_input_layout)
+        
+        dest_group.setLayout(dest_layout)
+        layout.addWidget(dest_group)
+    
         # 界面设置
         ui_group = QGroupBox("界面设置")
         ui_layout = QVBoxLayout()
@@ -11627,7 +16092,548 @@ class SettingsDialogPro(QDialog):
         layout.addWidget(info_group)
         
         layout.addStretch()
+    
+        # 加载已保存的设置
+        default_dest = self.parent.user_manager.get_user_setting("default_dest_address", "")
+        self.default_dest_edit.setText(default_dest)
+
+    def setup_api_endpoint_tab(self):
+        """设置API接口标签页"""
+        layout = QVBoxLayout(self.api_endpoint_tab)
+        layout.setSpacing(15)
         
+        # 当前接口信息
+        current_group = QGroupBox("当前使用的API接口")
+        current_layout = QVBoxLayout()
+        
+        self.current_endpoint_label = QLabel("加载中...")
+        self.current_endpoint_label.setWordWrap(True)
+        self.current_endpoint_label.setStyleSheet("font-weight: bold; padding: 5px; background-color: #f0f8ff; border-radius: 5px;")
+        current_layout.addWidget(self.current_endpoint_label)
+        
+        current_group.setLayout(current_layout)
+        layout.addWidget(current_group)
+        
+        # 接口选择
+        select_group = QGroupBox("切换API接口")
+        select_layout = QVBoxLayout()
+        
+        select_info = QLabel("选择要使用的API接口类型：")
+        select_layout.addWidget(select_info)
+        
+        # 接口选择按钮组
+        self.endpoint_buttons = QWidget()
+        endpoint_btn_layout = QHBoxLayout(self.endpoint_buttons)
+        
+        self.use_paid_btn = QPushButton("💰 收费接口")
+        self.use_paid_btn.setToolTip("使用快递100收费接口，需要配置Customer和Auth Key")
+        self.use_paid_btn.clicked.connect(lambda: self.switch_to_paid_endpoint())
+        endpoint_btn_layout.addWidget(self.use_paid_btn)
+        
+        self.use_free_btn = QPushButton("🆓 免费接口")
+        self.use_free_btn.setToolTip("使用快递100免费接口，无需认证，但有频率限制")
+        self.use_free_btn.clicked.connect(lambda: self.switch_to_free_endpoint())
+        endpoint_btn_layout.addWidget(self.use_free_btn)
+        
+        endpoint_btn_layout.addStretch()
+        
+        select_layout.addWidget(self.endpoint_buttons)
+        
+        # 说明信息
+        info_text = QLabel(
+            "💡 接口说明：\n"
+            "• 收费接口：需要配置API账号（Customer和Auth Key），稳定性高，支持自动切换账号\n"
+            "• 免费接口：无需配置，直接使用快递100官方免费查询接口，适合少量查询（每天约50-100次）\n"
+            "• 自定义接口：可添加其他快递查询API"
+        )
+        info_text.setWordWrap(True)
+        info_text.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px; padding: 5px;")
+        select_layout.addWidget(info_text)
+        
+        select_group.setLayout(select_layout)
+        layout.addWidget(select_group)
+        
+        # 管理按钮
+        manage_group = QGroupBox("高级管理")
+        manage_layout = QHBoxLayout()
+        
+        manage_endpoints_btn = QPushButton("📋 管理所有接口")
+        manage_endpoints_btn.setToolTip("添加、编辑、删除自定义API接口")
+        manage_endpoints_btn.clicked.connect(self.manage_endpoints)
+        manage_layout.addWidget(manage_endpoints_btn)
+        
+        test_endpoint_btn = QPushButton("🔍 测试当前接口")
+        test_endpoint_btn.setToolTip("测试当前API接口是否可用")
+        test_endpoint_btn.clicked.connect(self.test_current_endpoint)
+        manage_layout.addWidget(test_endpoint_btn)
+        
+        manage_layout.addStretch()
+        
+        manage_group.setLayout(manage_layout)
+        layout.addWidget(manage_group)
+        
+        layout.addStretch()
+        
+        # 加载当前接口信息
+        self.refresh_endpoint_display()
+
+    def setup_proxy_tab(self):
+        """设置代理标签页 - 简化版，高德直连，OSM走代理"""
+        layout = QVBoxLayout(self.proxy_tab)
+        layout.setSpacing(15)
+        
+        # 说明信息
+        info_label = QLabel(
+            "配置网络代理，用于访问需要代理的地图服务（如 OpenStreetMap）。\n"
+            "💡 提示：高德地图无需代理，可直接使用。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; padding: 5px;")
+        layout.addWidget(info_label)
+        
+        # 代理开关
+        enable_group = QGroupBox("代理状态")
+        enable_layout = QVBoxLayout()
+        
+        self.proxy_enable_check = QCheckBox("启用代理")
+        self.proxy_enable_check.setToolTip("开启后，OpenStreetMap 等需要代理的地图服务将使用代理连接")
+        enable_layout.addWidget(self.proxy_enable_check)
+        
+        enable_group.setLayout(enable_layout)
+        layout.addWidget(enable_group)
+        
+        # 代理服务器设置
+        server_group = QGroupBox("代理服务器设置")
+        server_layout = QFormLayout()
+        
+        # 代理类型
+        self.proxy_type_combo = QComboBox()
+        self.proxy_type_combo.addItems(["HTTP", "SOCKS5"])
+        self.proxy_type_combo.setToolTip("选择代理服务器类型")
+        server_layout.addRow("代理类型:", self.proxy_type_combo)
+        
+        # 代理地址
+        address_layout = QHBoxLayout()
+        self.proxy_host_edit = QLineEdit()
+        self.proxy_host_edit.setPlaceholderText("127.0.0.1")
+        self.proxy_host_edit.setText("127.0.0.1")
+        address_layout.addWidget(self.proxy_host_edit)
+        
+        address_layout.addWidget(QLabel(":"))
+        
+        self.proxy_port_spin = QSpinBox()
+        self.proxy_port_spin.setRange(1, 65535)
+        self.proxy_port_spin.setValue(20808)
+        self.proxy_port_spin.setToolTip("代理端口")
+        address_layout.addWidget(self.proxy_port_spin)
+        
+        address_layout.addStretch()
+        server_layout.addRow("代理地址:", address_layout)
+        
+        # 用户名（可选）
+        self.proxy_username_edit = QLineEdit()
+        self.proxy_username_edit.setPlaceholderText("可选，如需认证请填写")
+        server_layout.addRow("用户名:", self.proxy_username_edit)
+        
+        # 密码（可选）
+        self.proxy_password_edit = QLineEdit()
+        self.proxy_password_edit.setPlaceholderText("可选，如需认证请填写")
+        self.proxy_password_edit.setEchoMode(QLineEdit.Password)
+        server_layout.addRow("密码:", self.proxy_password_edit)
+        
+        server_group.setLayout(server_layout)
+        layout.addWidget(server_group)
+        
+        # 测试按钮
+        test_layout = QHBoxLayout()
+        
+        self.test_proxy_btn = QPushButton("🔍 测试代理连接")
+        self.test_proxy_btn.setToolTip("测试代理服务器是否可用")
+        self.test_proxy_btn.clicked.connect(self.test_proxy_connection)
+        test_layout.addWidget(self.test_proxy_btn)
+        
+        test_layout.addStretch()
+        
+        layout.addLayout(test_layout)
+        
+        # 状态提示
+        self.proxy_status_label = QLabel("")
+        self.proxy_status_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        layout.addWidget(self.proxy_status_label)
+        
+        layout.addStretch()
+        
+        # 加载当前代理设置
+        self.load_proxy_settings()
+        
+        # 连接信号
+        self.proxy_enable_check.stateChanged.connect(self.on_proxy_enable_changed)
+        self.on_proxy_enable_changed()
+
+    def on_proxy_enable_changed(self):
+        """代理启用状态改变"""
+        enabled = self.proxy_enable_check.isChecked()
+        self.proxy_type_combo.setEnabled(enabled)
+        self.proxy_host_edit.setEnabled(enabled)
+        self.proxy_port_spin.setEnabled(enabled)
+        self.proxy_username_edit.setEnabled(enabled)
+        self.proxy_password_edit.setEnabled(enabled)
+        self.test_proxy_btn.setEnabled(enabled)
+        # 检查控件是否存在（兼容性）
+        if hasattr(self, 'proxy_map_check'):
+            self.proxy_map_check.setEnabled(enabled)
+        if hasattr(self, 'proxy_api_check'):
+            self.proxy_api_check.setEnabled(enabled)
+
+    def load_proxy_settings(self):
+        """加载代理设置"""
+        if not self.parent.user_manager.current_user_db:
+            return
+        
+        # 加载启用状态
+        enabled = self.parent.user_manager.get_user_setting("proxy_enabled", "0")
+        self.proxy_enable_check.setChecked(enabled == "1")
+        
+        # 加载代理类型
+        proxy_type = self.parent.user_manager.get_user_setting("proxy_type", "HTTP")
+        index = self.proxy_type_combo.findText(proxy_type)
+        if index >= 0:
+            self.proxy_type_combo.setCurrentIndex(index)
+        
+        # 加载代理地址
+        host = self.parent.user_manager.get_user_setting("proxy_host", "127.0.0.1")
+        self.proxy_host_edit.setText(host)
+        
+        port = self.parent.user_manager.get_user_setting("proxy_port", "20808")
+        try:
+            self.proxy_port_spin.setValue(int(port))
+        except:
+            self.proxy_port_spin.setValue(20808)
+        
+        # 加载用户名密码
+        username = self.parent.user_manager.get_user_setting("proxy_username", "")
+        self.proxy_username_edit.setText(username)
+        
+        password = self.parent.user_manager.get_user_setting("proxy_password", "")
+        self.proxy_password_edit.setText(password)
+
+    def save_proxy_settings(self):
+        """保存代理设置"""
+        if not self.parent.user_manager.current_user_db:
+            return
+        
+        self.parent.user_manager.save_user_setting(
+            "proxy_enabled", 
+            "1" if self.proxy_enable_check.isChecked() else "0"
+        )
+        self.parent.user_manager.save_user_setting(
+            "proxy_type", 
+            self.proxy_type_combo.currentText()
+        )
+        self.parent.user_manager.save_user_setting(
+            "proxy_host", 
+            self.proxy_host_edit.text().strip()
+        )
+        self.parent.user_manager.save_user_setting(
+            "proxy_port", 
+            str(self.proxy_port_spin.value())
+        )
+        self.parent.user_manager.save_user_setting(
+            "proxy_username", 
+            self.proxy_username_edit.text().strip()
+        )
+        self.parent.user_manager.save_user_setting(
+            "proxy_password", 
+            self.proxy_password_edit.text().strip()
+        )
+        # 简化：地图始终使用代理设置，API不使用代理
+        self.parent.user_manager.save_user_setting("proxy_for_map", "1")
+        self.parent.user_manager.save_user_setting("proxy_for_api", "0")
+        # 注：应用代理到主窗口（update_proxy_settings）由保存/关闭时统一调用，
+        # 自动保存仅写库，避免频繁刷新地图造成卡顿
+
+    def test_proxy_connection(self):
+        """测试代理连接"""
+        import requests
+        
+        proxy_type = self.proxy_type_combo.currentText().lower()
+        host = self.proxy_host_edit.text().strip()
+        port = self.proxy_port_spin.value()
+        username = self.proxy_username_edit.text().strip()
+        password = self.proxy_password_edit.text().strip()
+        
+        if not host:
+            QMessageBox.warning(self, "提示", "请输入代理服务器地址")
+            return
+        
+        # 构建代理URL
+        if username and password:
+            proxy_url = f"{proxy_type}://{username}:{password}@{host}:{port}"
+        else:
+            proxy_url = f"{proxy_type}://{host}:{port}"
+        
+        proxies = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+        
+        self.proxy_status_label.setText("正在测试代理连接...")
+        self.proxy_status_label.setStyleSheet("color: #FF9800; font-size: 11px; padding: 5px;")
+        
+        # 在新线程中测试
+        class ProxyTestThread(QThread):
+            finished = Signal(bool, str)
+            
+            def __init__(self, proxies):
+                super().__init__()
+                self.proxies = proxies
+            
+            def run(self):
+                try:
+                    # 测试连接到 OpenStreetMap
+                    response = requests.get(
+                        "https://tile.openstreetmap.org/",
+                        proxies=self.proxies,
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        self.finished.emit(True, "代理连接成功！")
+                    else:
+                        self.finished.emit(False, f"代理连接失败：HTTP {response.status_code}")
+                except requests.exceptions.ProxyError as e:
+                    self.finished.emit(False, f"代理错误：无法连接到代理服务器")
+                except requests.exceptions.ConnectTimeout:
+                    self.finished.emit(False, "连接超时：代理服务器无响应")
+                except Exception as e:
+                    self.finished.emit(False, f"测试失败：{str(e)}")
+        
+        self.test_thread = ProxyTestThread(proxies)
+        
+        def on_test_finished(success, message):
+            if success:
+                self.proxy_status_label.setText(f"✅ {message}")
+                self.proxy_status_label.setStyleSheet("color: #4CAF50; font-size: 11px; padding: 5px;")
+                QMessageBox.information(self, "测试成功", message)
+            else:
+                self.proxy_status_label.setText(f"❌ {message}")
+                self.proxy_status_label.setStyleSheet("color: #F44336; font-size: 11px; padding: 5px;")
+                QMessageBox.warning(self, "测试失败", message)
+        
+        self.test_thread.finished.connect(on_test_finished)
+        self.test_thread.start()
+
+    def refresh_endpoint_display(self):
+        """刷新接口显示"""
+        if hasattr(self.parent, 'api_endpoint_manager') and self.parent.api_endpoint_manager:
+            endpoint = self.parent.api_endpoint_manager.get_current_endpoint()
+            if endpoint:
+                endpoint_type_name = self.parent.api_endpoint_manager.get_endpoint_type_name(
+                    endpoint.get('endpoint_type', 'custom')
+                )
+                self.current_endpoint_label.setText(
+                    f"📡 {endpoint.get('name')}\n"
+                    f"   类型: {endpoint_type_name}\n"
+                    f"   API地址: {endpoint.get('url')}\n"
+                    f"   描述: {endpoint.get('description', '无')}"
+                )
+                
+                # 更新按钮样式
+                is_paid = endpoint.get('endpoint_type') == 'paid'
+                is_free = endpoint.get('endpoint_type') == 'free'
+                
+                self.use_paid_btn.setStyleSheet(
+                    f"background-color: {MacaronColors.GREEN_MINT.name()}; font-weight: bold;" if is_paid else ""
+                )
+                self.use_free_btn.setStyleSheet(
+                    f"background-color: {MacaronColors.GREEN_MINT.name()}; font-weight: bold;" if is_free else ""
+                )
+    
+    def switch_to_paid_endpoint(self):
+        """切换到收费接口"""
+        current = self.parent.api_endpoint_manager.get_current_endpoint()
+        if current and current.get('endpoint_type') == 'paid':
+            QMessageBox.information(self, "提示", "当前已经是收费接口")
+            return
+        
+        # 查找收费接口
+        endpoints = self.parent.api_endpoint_manager.get_all_endpoints()
+        paid_endpoint = None
+        for ep in endpoints:
+            if ep.get('endpoint_type') == 'paid':
+                paid_endpoint = ep
+                break
+        
+        if paid_endpoint:
+            reply = QMessageBox.question(
+                self, "确认切换",
+                f"确定要切换到收费接口吗？\n\n"
+                f"收费接口需要配置有效的API账号（Customer和Auth Key）。\n"
+                f"如果尚未配置，请在「API账号」标签页中添加账号。",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                if self.parent.api_endpoint_manager.set_current_endpoint(paid_endpoint['id']):
+                    QMessageBox.information(self, "成功", "已切换到收费接口")
+                    self.refresh_endpoint_display()
+                    # 刷新主窗口的接口显示
+                    if hasattr(self.parent, 'update_api_endpoint_display'):
+                        self.parent.update_api_endpoint_display()
+                    self.parent.status_bar.showMessage("✅ 已切换到收费接口，请确保已配置API账号", 5000)
+                else:
+                    QMessageBox.critical(self, "失败", "切换接口失败")
+        else:
+            QMessageBox.warning(self, "提示", "未找到收费接口配置，请检查数据库")
+    
+    def switch_to_free_endpoint(self):
+        """切换到免费接口"""
+        current = self.parent.api_endpoint_manager.get_current_endpoint()
+        if current and current.get('endpoint_type') == 'free':
+            QMessageBox.information(self, "提示", "当前已经是免费接口")
+            return
+        
+        # 查找免费接口
+        endpoints = self.parent.api_endpoint_manager.get_all_endpoints()
+        free_endpoint = None
+        for ep in endpoints:
+            if ep.get('endpoint_type') == 'free':
+                free_endpoint = ep
+                break
+        
+        if free_endpoint:
+            reply = QMessageBox.question(
+                self, "确认切换",
+                f"确定要切换到免费接口吗？\n\n"
+                f"⚠️ 注意事项：\n"
+                f"• 免费接口无需配置API账号\n"
+                f"• 有频率限制，建议每天查询不超过50次\n"
+                f"• 稳定性不如收费接口，可能出现查询失败\n"
+                f"• 部分快递公司可能不支持\n\n"
+                f"是否继续？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                if self.parent.api_endpoint_manager.set_current_endpoint(free_endpoint['id']):
+                    QMessageBox.information(self, "成功", "已切换到免费接口")
+                    self.refresh_endpoint_display()
+                    # 刷新主窗口的接口显示
+                    if hasattr(self.parent, 'update_api_endpoint_display'):
+                        self.parent.update_api_endpoint_display()
+                    self.parent.status_bar.showMessage("✅ 已切换到免费接口，无需API账号即可查询", 5000)
+                else:
+                    QMessageBox.critical(self, "失败", "切换接口失败")
+        else:
+            QMessageBox.warning(self, "提示", "未找到免费接口配置，请检查数据库")
+    
+    def manage_endpoints(self):
+        """管理所有接口"""
+        dialog = ApiEndpointDialog(self.parent.api_endpoint_manager, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.refresh_endpoint_display()
+    
+    def test_current_endpoint(self):
+        """测试当前接口"""
+        if not hasattr(self.parent, 'api_endpoint_manager'):
+            QMessageBox.warning(self, "提示", "API接口管理器未初始化")
+            return
+        
+        endpoint = self.parent.api_endpoint_manager.get_current_endpoint()
+        if not endpoint:
+            QMessageBox.warning(self, "提示", "未找到当前接口配置")
+            return
+        
+        # 显示测试进度
+        progress_dialog = QProgressDialog("正在测试API接口...", "取消", 0, 0, self)
+        progress_dialog.setWindowTitle("测试中")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.show()
+        
+        # 使用一个测试单号
+        test_number = "SF1234567890"
+        test_company = "shunfeng"
+        
+        class TestThread(QThread):
+            finished = Signal(bool, str, dict)
+            
+            def __init__(self, tracking_num, company_code, endpoint, customer="", key=""):
+                super().__init__()
+                self.tracking_num = tracking_num
+                self.company_code = company_code
+                self.endpoint = endpoint
+                self.customer = customer
+                self.key = key
+                self._is_cancelled = False
+            
+            def cancel(self):
+                self._is_cancelled = True
+            
+            def run(self):
+                try:
+                    if self._is_cancelled:
+                        self.finished.emit(False, "测试已取消", {})
+                        return
+                        
+                    if self.endpoint.get('endpoint_type') == 'free':
+                        url = self.endpoint.get('url', 'https://www.kuaidi100.com/query')
+                        params = {
+                            'type': self.company_code,
+                            'postid': self.tracking_num,
+                            'temp': int(time.time() * 1000)
+                        }
+                        headers = {'User-Agent': 'Mozilla/5.0'}
+                        response = requests.get(url, params=params, headers=headers, timeout=10)
+                        
+                        if self._is_cancelled:
+                            self.finished.emit(False, "测试已取消", {})
+                            return
+                            
+                        if response.status_code == 200:
+                            self.finished.emit(True, "接口可用", response.json())
+                        else:
+                            self.finished.emit(False, f"请求失败: HTTP {response.status_code}", {})
+                    else:
+                        self.finished.emit(False, "请使用实际查询测试收费接口", {})
+                        
+                except Exception as e:
+                    self.finished.emit(False, f"测试失败: {str(e)}", {})
+        
+        # 创建并保存线程引用
+        self.test_thread = TestThread(test_number, test_company, endpoint, self.parent.customer, self.parent.key)
+        
+        def on_test_finished(success, message, data):
+            # 检查进度对话框是否还存在
+            if progress_dialog and not progress_dialog.isHidden():
+                progress_dialog.close()
+            
+            if success:
+                QMessageBox.information(self, "测试结果", 
+                    f"✅ {message}\n\n"
+                    f"接口返回数据示例:\n{json.dumps(data, ensure_ascii=False, indent=2)[:500]}")
+            else:
+                QMessageBox.warning(self, "测试结果", f"❌ {message}")
+            
+            # 清理线程引用
+            if hasattr(self, 'test_thread'):
+                self.test_thread = None
+        
+        def on_cancel():
+            if hasattr(self, 'test_thread') and self.test_thread and self.test_thread.isRunning():
+                self.test_thread.cancel()
+                self.test_thread.quit()
+                self.test_thread.wait(1000)
+            progress_dialog.close()
+        
+        # 连接信号
+        self.test_thread.finished.connect(on_test_finished)
+        progress_dialog.canceled.connect(on_cancel)
+        
+        # 启动线程
+        self.test_thread.start()
+
+
+
     def load_all_stats(self):
         """加载所有统计数据"""
         self.load_delivery_stats()
@@ -11781,8 +16787,8 @@ class SettingsDialogPro(QDialog):
         self.parent.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         self.parent.status_bar.showMessage("✅ 窗口大小已重置", 2000)
     
-    def save_settings(self):
-        """保存设置"""
+    def _save_settings_now(self):
+        """立即保存设置到数据库（自动保存核心，轻量不弹提示）"""
         self.parent.backup_manager.set_max_backups(self.max_backups_spin.value())
         self.parent.user_manager.save_user_setting("max_backups", str(self.max_backups_spin.value()))
         
@@ -11798,8 +16804,65 @@ class SettingsDialogPro(QDialog):
         
         global DEBUG_MODE
         DEBUG_MODE = debug_mode
-        
+    
+        # 保存默认收件地址
+        default_dest = self.default_dest_edit.text().strip()
+        self.parent.user_manager.save_user_setting("default_dest_address", default_dest)
+
+        # 保存代理设置
+        self.save_proxy_settings()
+
+    def _apply_settings(self):
+        """应用设置到主窗口（代理刷新、接口显示）"""
+        # 刷新主窗口的接口显示
+        if hasattr(self.parent, 'update_api_endpoint_display'):
+            self.parent.update_api_endpoint_display()
+        # 应用代理设置到主窗口（刷新地图等）
+        if hasattr(self.parent, 'update_proxy_settings'):
+            self.parent.update_proxy_settings()
+
+    def save_settings(self):
+        """手动保存设置（带提示并应用）"""
+        self._save_settings_now()
+        self._apply_settings()
         self.parent.status_bar.showMessage("✅ 设置已保存", 2000)
+
+    def _autosave_settings(self):
+        """设置变更信号回调：防抖触发自动保存"""
+        if self._loading:
+            return
+        self._settings_save_timer.start()
+
+    def _connect_autosave(self):
+        """连接所有设置控件的变更信号到实时自动保存"""
+        # 备份设置
+        self.max_backups_spin.valueChanged.connect(self._autosave_settings)
+        self.auto_backup_check.stateChanged.connect(self._autosave_settings)
+        # 高级设置
+        self.debug_check.stateChanged.connect(self._autosave_settings)
+        self.default_dest_edit.textChanged.connect(self._autosave_settings)
+        # 代理设置
+        self.proxy_enable_check.stateChanged.connect(self._autosave_settings)
+        self.proxy_type_combo.currentIndexChanged.connect(self._autosave_settings)
+        self.proxy_host_edit.textChanged.connect(self._autosave_settings)
+        self.proxy_port_spin.valueChanged.connect(self._autosave_settings)
+        self.proxy_username_edit.textChanged.connect(self._autosave_settings)
+        self.proxy_password_edit.textChanged.connect(self._autosave_settings)
+
+    def _on_close(self):
+        """关闭设置对话框：强制保存后关闭"""
+        if hasattr(self, '_settings_save_timer'):
+            self._settings_save_timer.stop()
+        self._save_settings_now()
+        self._apply_settings()
+        self.accept()
+
+    def closeEvent(self, event):
+        """关闭事件：强制保存设置（Esc/窗口X等）"""
+        if hasattr(self, '_settings_save_timer'):
+            self._settings_save_timer.stop()
+            self._save_settings_now()
+        super().closeEvent(event)
 
 
 
@@ -13363,6 +18426,906 @@ class BatchExportDialog(QDialog):
         index = self.format_combo.currentIndex()
         formats = ['txt', 'csv', 'json']
         return formats[index]
+
+class VerificationCodeDialog(DialogWithStatusBar):
+    """验证码/手机尾号输入对话框"""
+    
+    def __init__(self, tracking_num: str, company_name: str, parent=None):
+        super().__init__(parent)
+        self.tracking_num = tracking_num
+        self.company_name = company_name
+        self.verification_code = ""
+        self.init_ui()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+        
+    def init_ui(self):
+        self.setWindowTitle("需要验证")
+        self.setMinimumSize(400, 200)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # 提示信息
+        info_label = QLabel(
+            f"<b>查询快递需要验证</b><br><br>"
+            f"快递单号：{self.tracking_num}<br>"
+            f"快递公司：{self.company_name}<br><br>"
+            f"<span style='color: #E65100;'>请输入收件人手机尾号（后4位）进行验证：</span>"
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # 输入框
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(QLabel("手机尾号："))
+        
+        self.code_edit = QLineEdit()
+        self.code_edit.setPlaceholderText("请输入4位数字")
+        self.code_edit.setMaxLength(4)
+        self.code_edit.setMinimumWidth(100)
+        self.code_edit.returnPressed.connect(self.verify_and_accept)
+        # 只允许输入数字
+        self.code_edit.textChanged.connect(self.on_text_changed)
+        input_layout.addWidget(self.code_edit)
+        input_layout.addStretch()
+        
+        layout.addLayout(input_layout)
+        
+        # 提示文字
+        hint_label = QLabel(
+            "<span style='color: #666; font-size: 11px;'>"
+            "💡 提示：<br>"
+            "• 如果是隐私号码，可能需要尝试几个尾号<br>"
+            "• 中通快递常见需要验证收件人手机尾号<br>"
+            "• 验证码错误可以重新输入"
+            "</span>"
+        )
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        
+        layout.addStretch()
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        verify_btn = QPushButton("验证查询")
+        verify_btn.clicked.connect(self.verify_and_accept)
+        verify_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.BLUE_SKY.name()};
+                font-weight: bold;
+                padding: 6px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.BLUE_LAVENDER.name()};
+            }}
+        """)
+        btn_layout.addWidget(verify_btn)
+        
+        skip_btn = QPushButton("跳过")
+        skip_btn.setToolTip("不查询此单号")
+        skip_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(skip_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # 添加状态栏
+        self.setup_status_bar(layout)
+        
+        self.setLayout(layout)
+        
+    def on_text_changed(self, text: str):
+        """只允许输入数字"""
+        filtered = ''.join(c for c in text if c.isdigit())
+        if filtered != text:
+            self.code_edit.setText(filtered)
+    
+    def verify_and_accept(self):
+        """验证并接受"""
+        code = self.code_edit.text().strip()
+        if len(code) != 4:
+            self.show_status("⚠️ 请输入4位手机尾号", 2000)
+            return
+        
+        self.verification_code = code
+        self.accept()
+    
+    def get_verification_code(self) -> str:
+        """获取验证码"""
+        return self.verification_code
+
+# ==================== 地图轨迹 HTML 模板 ====================
+class MapTemplate:
+    """Leaflet 地图 HTML 模板"""
+    
+    @classmethod
+    def get_map_html(cls, track_points: List[Dict]) -> str:
+        """生成地图HTML"""
+        import json
+        
+        # 处理轨迹点
+        points_json = json.dumps(track_points, ensure_ascii=False)
+        
+        return f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>物流轨迹地图</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: 'Microsoft YaHei', sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }}
+        #map {{
+            flex: 1;
+            width: 100%;
+        }}
+        .info-panel {{
+            background: white;
+            padding: 8px 12px;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 12px;
+            color: #666;
+        }}
+        .legend {{
+            background: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }}
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            margin: 4px 0;
+        }}
+        .legend-color {{
+            width: 20px;
+            height: 4px;
+            margin-right: 8px;
+            border-radius: 2px;
+        }}
+        .legend-dot {{
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }}
+        .leaflet-popup-content {{
+            font-size: 12px;
+            max-width: 300px;
+        }}
+        .popup-title {{
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }}
+        .popup-time {{
+            color: #999;
+            font-size: 11px;
+            margin-bottom: 5px;
+        }}
+        .popup-context {{
+            color: #666;
+            line-height: 1.5;
+        }}
+        .route-stats {{
+            margin-left: 10px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="info-panel" id="info-panel">
+        <span id="route-info">正在加载地图...</span>
+    </div>
+    <div id="map"></div>
+    
+    <script>
+        // 轨迹点数据
+        const trackPoints = {points_json};
+        
+        // 初始化地图
+        const map = L.map('map', {{
+            zoomControl: true,
+            fadeAnimation: true
+        }});
+        
+        // 添加 OpenStreetMap 图层
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 19
+        }}).addTo(map);
+        
+        // 定义图标
+        const startIcon = L.divIcon({{
+            html: '<div style="background-color: #4CAF50; width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 6px rgba(76, 175, 80, 0.5);"></div>',
+            className: 'custom-marker',
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+        }});
+        
+        const endIcon = L.divIcon({{
+            html: '<div style="background-color: #F44336; width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 6px rgba(244, 67, 54, 0.5);"></div>',
+            className: 'custom-marker',
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+        }});
+        
+        const normalIcon = L.divIcon({{
+            html: '<div style="background-color: #2196F3; width: 10px; height: 10px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(33, 150, 243, 0.4);"></div>',
+            className: 'custom-marker',
+            iconSize: [10, 10],
+            iconAnchor: [5, 5]
+        }});
+        
+        const transitIcon = L.divIcon({{
+            html: '<div style="background-color: #FF9800; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(255, 152, 0, 0.4);"></div>',
+            className: 'custom-marker',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        }});
+        
+        const pickupIcon = L.divIcon({{
+            html: '<div style="background-color: #9C27B0; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(156, 39, 176, 0.4);"></div>',
+            className: 'custom-marker',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        }});
+        
+        // 存储所有标记和线条
+        const markers = [];
+        const lines = [];
+        let bounds = L.latLngBounds([]);
+        
+        // 颜色定义
+        const colors = {{
+            transit: '#FF9800',
+            pickup: '#9C27B0',
+            normal: '#2196F3',
+            start: '#4CAF50',
+            end: '#F44336'
+        }};
+        
+        // 处理轨迹点
+        if (trackPoints && trackPoints.length > 0) {{
+            let validPoints = 0;
+            let totalDistance = 0;
+            
+            // 创建标记
+            trackPoints.forEach((point, index) => {{
+                if (point.lat && point.lng) {{
+                    validPoints++;
+                    const latLng = L.latLng(point.lat, point.lng);
+                    bounds.extend(latLng);
+                    
+                    // 选择图标
+                    let icon = normalIcon;
+                    if (index === 0) {{
+                        icon = startIcon;
+                    }} else if (index === trackPoints.length - 1) {{
+                        icon = endIcon;
+                    }} else if (point.type === 'transit_center') {{
+                        icon = transitIcon;
+                    }} else if (point.type === 'pickup') {{
+                        icon = pickupIcon;
+                    }}
+                    
+                    // 创建弹出内容
+                    const popupContent = `
+                        <div class="popup-title">${{point.site_name || point.city || '未知地点'}}</div>
+                        <div class="popup-time">${{point.time_str || ''}}</div>
+                        <div class="popup-context">${{point.context || ''}}</div>
+                    `;
+                    
+                    // 添加标记
+                    const marker = L.marker(latLng, {{ icon: icon }})
+                        .bindPopup(popupContent)
+                        .addTo(map);
+                    
+                    markers.push(marker);
+                }}
+            }});
+            
+            // 绘制连线
+            const validLatLngs = trackPoints
+                .filter(p => p.lat && p.lng)
+                .map(p => [p.lat, p.lng]);
+            
+            if (validLatLngs.length >= 2) {{
+                // 绘制主线路
+                const polyline = L.polyline(validLatLngs, {{
+                    color: '#2196F3',
+                    weight: 3,
+                    opacity: 0.7,
+                    smoothFactor: 1,
+                    dashArray: null
+                }}).addTo(map);
+                
+                lines.push(polyline);
+                
+                // 计算总距离（粗略估算）
+                for (let i = 1; i < validLatLngs.length; i++) {{
+                    const p1 = L.latLng(validLatLngs[i-1][0], validLatLngs[i-1][1]);
+                    const p2 = L.latLng(validLatLngs[i][0], validLatLngs[i][1]);
+                    totalDistance += p1.distanceTo(p2);
+                }}
+                
+                // 绘制各段（用不同颜色区分运输段和停留段）
+                for (let i = 1; i < trackPoints.length; i++) {{
+                    const p1 = trackPoints[i-1];
+                    const p2 = trackPoints[i];
+                    
+                    if (p1.lat && p1.lng && p2.lat && p2.lng) {{
+                        let color = colors.normal;
+                        let dashArray = null;
+                        let weight = 2;
+                        
+                        // 根据类型设置颜色
+                        if (p1.type === 'transit_center' || p2.type === 'transit_center') {{
+                            color = colors.transit;
+                        }}
+                        
+                        // 如果是同一站点，用虚线表示停留
+                        if (p1.site_name && p2.site_name && p1.site_name === p2.site_name) {{
+                            color = '#9E9E9E';
+                            dashArray = '5, 5';
+                            weight = 2;
+                        }}
+                        
+                        const segmentLine = L.polyline([[p1.lat, p1.lng], [p2.lat, p2.lng]], {{
+                            color: color,
+                            weight: weight,
+                            opacity: 0.5,
+                            dashArray: dashArray
+                        }}).addTo(map);
+                        
+                        lines.push(segmentLine);
+                    }}
+                }}
+            }}
+            
+            // 更新信息面板
+            const infoPanel = document.getElementById('route-info');
+            const totalPoints = trackPoints.length;
+            const distanceKm = (totalDistance / 1000).toFixed(1);
+            
+            infoPanel.innerHTML = `
+                📍 共 ${{totalPoints}} 个物流节点 | 
+                📏 有效位置点: ${{validPoints}} 个 | 
+                🛣️ 轨迹总长约 ${{distanceKm}} 公里
+            `;
+            
+            // 调整地图视图
+            if (validPoints > 0) {{
+                if (validPoints === 1) {{
+                    map.setView(bounds.getCenter(), 10);
+                }} else {{
+                    map.fitBounds(bounds, {{ padding: [30, 30] }});
+                }}
+            }}
+        }} else {{
+            document.getElementById('route-info').innerHTML = '⚠️ 暂无有效的地理位置信息，无法显示地图轨迹';
+            map.setView([35.0, 105.0], 4);  // 默认显示中国中心
+        }}
+        
+        // 添加图例
+        const legend = L.control({{ position: 'bottomright' }});
+        legend.onAdd = function(map) {{
+            const div = L.DomUtil.create('div', 'legend');
+            div.innerHTML = `
+                <div style="font-weight: bold; margin-bottom: 8px;">📌 图例</div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background-color: #4CAF50;"></div>
+                    <span>起点/揽收</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background-color: #F44336;"></div>
+                    <span>当前位置/终点</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background-color: #FF9800;"></div>
+                    <span>转运中心</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background-color: #2196F3;"></div>
+                    <span>普通节点</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: #2196F3;"></div>
+                    <span>运输路线</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: repeating-linear-gradient(90deg, #9E9E9E 0px, #9E9E9E 5px, transparent 5px, transparent 10px);"></div>
+                    <span>站点停留</span>
+                </div>
+            `;
+            return div;
+        }};
+        
+        if (trackPoints && trackPoints.length > 0) {{
+            legend.addTo(map);
+        }}
+        
+        // 添加比例尺
+        L.control.scale({{
+            imperial: false,
+            metric: true,
+            position: 'bottomleft'
+        }}).addTo(map);
+    </script>
+</body>
+</html>'''
+
+class DestAddressManager:
+    """收件地址管理器"""
+    
+    def __init__(self, db_manager: DatabaseManagerPro, parent_gui):
+        self.db_manager = db_manager
+        self.parent_gui = parent_gui
+        self.addresses = []
+        self.init_table()
+        self.load_addresses()
+    
+    def init_table(self):
+        """初始化表"""
+        sql = """
+        CREATE TABLE IF NOT EXISTS dest_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            address_type TEXT DEFAULT 'custom',
+            is_default INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        self.db_manager.execute_update(sql)
+        
+        # 尝试添加新字段
+        try:
+            self.db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN address_type TEXT DEFAULT 'custom'")
+        except:
+            pass
+        try:
+            self.db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN is_default INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            self.db_manager.execute_update("ALTER TABLE dest_addresses ADD COLUMN sort_order INTEGER DEFAULT 0")
+        except:
+            pass
+    
+    def load_addresses(self):
+        """加载所有地址"""
+        sql = """
+        SELECT * FROM dest_addresses 
+        ORDER BY is_default DESC, sort_order, id
+        """
+        self.addresses = self.db_manager.execute_query(sql)
+        return self.addresses
+    
+    def get_all_addresses(self) -> List[Dict]:
+        """获取所有地址"""
+        return self.addresses
+    
+    def get_default_address(self) -> Optional[Dict]:
+        """获取默认地址"""
+        for addr in self.addresses:
+            if addr.get('is_default', 0) == 1:
+                return addr
+        return None
+    
+    def get_default_address_text(self) -> str:
+        """获取默认地址文本"""
+        default = self.get_default_address()
+        if default:
+            return default.get('address', '')
+        return ""
+    
+    def add_address(self, name: str, address: str, address_type: str = 'custom') -> bool:
+        """添加地址"""
+        # 获取最大排序
+        sql = "SELECT MAX(sort_order) as max_order FROM dest_addresses"
+        result = self.db_manager.execute_query(sql)
+        max_order = result[0]['max_order'] if result and result[0]['max_order'] is not None else 0
+        
+        sql = """
+        INSERT INTO dest_addresses (name, address, address_type, sort_order)
+        VALUES (?, ?, ?, ?)
+        """
+        result = self.db_manager.execute_update(sql, (name, address, address_type, max_order + 1))
+        if result:
+            self.load_addresses()
+        return result
+    
+    def update_address(self, addr_id: int, name: str, address: str) -> bool:
+        """更新地址"""
+        sql = """
+        UPDATE dest_addresses 
+        SET name = ?, address = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """
+        result = self.db_manager.execute_update(sql, (name, address, addr_id))
+        if result:
+            self.load_addresses()
+        return result
+    
+    def delete_address(self, addr_id: int) -> bool:
+        """删除地址"""
+        sql = "DELETE FROM dest_addresses WHERE id = ?"
+        result = self.db_manager.execute_update(sql, (addr_id,))
+        if result:
+            self.load_addresses()
+        return result
+    
+    def set_default(self, addr_id: int) -> bool:
+        """设为默认地址"""
+        # 清除其他默认
+        sql1 = "UPDATE dest_addresses SET is_default = 0"
+        self.db_manager.execute_update(sql1)
+        
+        # 设置新的默认
+        sql2 = "UPDATE dest_addresses SET is_default = 1 WHERE id = ?"
+        result = self.db_manager.execute_update(sql2, (addr_id,))
+        if result:
+            self.load_addresses()
+        return result
+    
+    def move_up(self, addr_id: int) -> bool:
+        """上移"""
+        for i, addr in enumerate(self.addresses):
+            if addr['id'] == addr_id and i > 0:
+                # 交换排序
+                addr1 = self.addresses[i-1]
+                addr2 = addr
+                sql1 = "UPDATE dest_addresses SET sort_order = ? WHERE id = ?"
+                sql2 = "UPDATE dest_addresses SET sort_order = ? WHERE id = ?"
+                self.db_manager.execute_update(sql1, (addr2['sort_order'], addr1['id']))
+                self.db_manager.execute_update(sql2, (addr1['sort_order'], addr2['id']))
+                self.load_addresses()
+                return True
+        return False
+    
+    def move_down(self, addr_id: int) -> bool:
+        """下移"""
+        for i, addr in enumerate(self.addresses):
+            if addr['id'] == addr_id and i < len(self.addresses) - 1:
+                addr1 = addr
+                addr2 = self.addresses[i+1]
+                sql1 = "UPDATE dest_addresses SET sort_order = ? WHERE id = ?"
+                sql2 = "UPDATE dest_addresses SET sort_order = ? WHERE id = ?"
+                self.db_manager.execute_update(sql1, (addr2['sort_order'], addr1['id']))
+                self.db_manager.execute_update(sql2, (addr1['sort_order'], addr2['id']))
+                self.load_addresses()
+                return True
+        return False
+    
+    def collect_sites_from_history(self) -> List[str]:
+        """从历史快递中收集所有站点"""
+        sites = set()
+        
+        # 从 express_summary 的 result_data 中提取站点
+        sql = """
+        SELECT result_data FROM express_summary 
+        WHERE is_deleted = 0 AND result_data IS NOT NULL AND result_data != ''
+        """
+        records = self.db_manager.execute_query(sql)
+        
+        for record in records:
+            try:
+                data = json.loads(record['result_data'])
+                track_list = data.get('data', [])
+                
+                # 使用节点分析器提取站点
+                if self.parent_gui and self.parent_gui.node_analyzer:
+                    nodes = self.parent_gui.node_analyzer.extract_nodes_from_track(track_list)
+                    for node in nodes:
+                        if node.get('site_name'):
+                            sites.add(node['site_name'])
+                        if node.get('city'):
+                            sites.add(node['city'])
+                else:
+                    # 简单正则提取
+                    for track in track_list:
+                        context = track.get('context', '')
+                        # 提取【】内的内容
+                        matches = re.findall(r'【([^】]+)】', context)
+                        for m in matches:
+                            if len(m) > 2 and not re.match(r'\d{4}-\d{2}-\d{2}', m):
+                                sites.add(m.strip())
+                        # 提取城市
+                        city_match = re.search(r'([^\s，。；]+(?:市|省|区|县))', context)
+                        if city_match:
+                            sites.add(city_match.group(1))
+            except:
+                continue
+        
+        # 从 delivery_history 中提取目的城市
+        sql2 = "SELECT DISTINCT dest_city FROM delivery_history WHERE dest_city != ''"
+        records2 = self.db_manager.execute_query(sql2)
+        for record in records2:
+            if record['dest_city']:
+                sites.add(record['dest_city'])
+        
+        # 从 node_transit_history 中提取站点
+        sql3 = "SELECT DISTINCT from_site FROM node_transit_history WHERE from_site != ''"
+        records3 = self.db_manager.execute_query(sql3)
+        for record in records3:
+            if record['from_site']:
+                sites.add(record['from_site'])
+        
+        sql4 = "SELECT DISTINCT to_site FROM node_transit_history WHERE to_site != ''"
+        records4 = self.db_manager.execute_query(sql4)
+        for record in records4:
+            if record['to_site']:
+                sites.add(record['to_site'])
+        
+        return sorted(sites)
+
+class SiteImportDialog(QDialog):
+    """站点导入选择对话框"""
+    
+    def __init__(self, sites: List[str], parent=None):
+        super().__init__(parent)
+        self.sites = sites
+        self.selected_sites = []
+        self.init_ui()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+    
+    def init_ui(self):
+        self.setWindowTitle("从历史站点导入")
+        self.setMinimumSize(600, 500)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # 说明
+        info_label = QLabel(
+            f"共找到 {len(self.sites)} 个历史站点（从已签收快递的物流轨迹中收集）。\n"
+            "请选择要导入的站点："
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # 搜索框
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("🔍 搜索:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("输入关键词筛选站点...")
+        self.search_edit.textChanged.connect(self.apply_filter)
+        search_layout.addWidget(self.search_edit)
+        layout.addLayout(search_layout)
+        
+        # 站点列表
+        list_group = QGroupBox("站点列表")
+        list_layout = QVBoxLayout()
+        
+        # 工具栏
+        toolbar = QHBoxLayout()
+        self.select_all_check = QCheckBox("全选")
+        self.select_all_check.stateChanged.connect(self.on_select_all)
+        toolbar.addWidget(self.select_all_check)
+        
+        self.invert_btn = QPushButton("反选")
+        self.invert_btn.clicked.connect(self.on_invert_selection)
+        toolbar.addWidget(self.invert_btn)
+        
+        toolbar.addStretch()
+        
+        self.stats_label = QLabel()
+        toolbar.addWidget(self.stats_label)
+        
+        list_layout.addLayout(toolbar)
+        
+        # 列表
+        self.site_list = QListWidget()
+        self.site_list.setSelectionMode(QListWidget.ExtendedSelection)
+        list_layout.addWidget(self.site_list)
+        
+        list_group.setLayout(list_layout)
+        layout.addWidget(list_group)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        
+        import_btn = QPushButton("📥 导入选中")
+        import_btn.clicked.connect(self.accept)
+        import_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {MacaronColors.GREEN_APPLE.name()};
+            }}
+        """)
+        btn_layout.addWidget(import_btn)
+        
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        # 加载数据
+        self.load_sites()
+    
+    def load_sites(self):
+        """加载站点"""
+        self.all_sites = self.sites
+        self.apply_filter()
+    
+    def apply_filter(self):
+        """应用筛选"""
+        filter_text = self.search_edit.text().strip().lower()
+        
+        self.site_list.clear()
+        
+        for site in self.all_sites:
+            if not filter_text or filter_text in site.lower():
+                item = QListWidgetItem(site)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                self.site_list.addItem(item)
+        
+        self.update_stats()
+        self.update_select_all_state()
+    
+    def on_select_all(self, state):
+        """全选/取消全选"""
+        checked = (state == Qt.Checked.value or state == Qt.Checked)
+        for i in range(self.site_list.count()):
+            item = self.site_list.item(i)
+            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.update_stats()
+    
+    def on_invert_selection(self):
+        """反选"""
+        for i in range(self.site_list.count()):
+            item = self.site_list.item(i)
+            item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+        self.update_stats()
+        self.update_select_all_state()
+    
+    def update_select_all_state(self):
+        """更新全选状态"""
+        if self.site_list.count() == 0:
+            self.select_all_check.setCheckState(Qt.Unchecked)
+            return
+        
+        checked_count = 0
+        for i in range(self.site_list.count()):
+            if self.site_list.item(i).checkState() == Qt.Checked:
+                checked_count += 1
+        
+        if checked_count == self.site_list.count():
+            self.select_all_check.setCheckState(Qt.Checked)
+        elif checked_count == 0:
+            self.select_all_check.setCheckState(Qt.Unchecked)
+        else:
+            self.select_all_check.setCheckState(Qt.PartiallyChecked)
+    
+    def update_stats(self):
+        """更新统计"""
+        total = self.site_list.count()
+        checked = 0
+        for i in range(total):
+            if self.site_list.item(i).checkState() == Qt.Checked:
+                checked += 1
+        self.stats_label.setText(f"共 {total} 个，选中 {checked} 个")
+    
+    def get_selected_sites(self) -> List[str]:
+        """获取选中的站点"""
+        selected = []
+        for i in range(self.site_list.count()):
+            item = self.site_list.item(i)
+            if item.checkState() == Qt.Checked:
+                selected.append(item.text())
+        return selected
+
+class DestAddressEditDialog(QDialog):
+    """收件地址编辑对话框"""
+    
+    def __init__(self, parent=None, addr: Dict = None):
+        super().__init__(parent)
+        self.addr = addr
+        self.init_ui()
+        if addr:
+            self.load_data()
+        self.setStyleSheet(MacaronStyle.get_main_style())
+    
+    def init_ui(self):
+        title = "编辑地址" if self.addr else "添加自定义地址"
+        self.setWindowTitle(title)
+        self.setMinimumSize(450, 200)
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        form_layout = QFormLayout()
+        
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("例如：家、公司、学校")
+        form_layout.addRow("地址名称:", self.name_edit)
+        
+        self.address_edit = QLineEdit()
+        self.address_edit.setPlaceholderText("例如：北京市朝阳区xxx小区")
+        form_layout.addRow("详细地址:", self.address_edit)
+        
+        layout.addLayout(form_layout)
+        
+        # 提示
+        hint_label = QLabel("💡 提示：地址名称用于标识，详细地址用于送达时间预估")
+        hint_label.setStyleSheet(f"color: {MacaronColors.TEXT_MEDIUM.name()}; font-size: 11px;")
+        layout.addWidget(hint_label)
+        
+        layout.addStretch()
+        
+        btn_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("保存")
+        save_btn.clicked.connect(self.accept)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {MacaronColors.GREEN_MINT.name()};
+            }}
+        """)
+        btn_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def load_data(self):
+        """加载数据"""
+        if self.addr:
+            self.name_edit.setText(self.addr.get('name', ''))
+            self.address_edit.setText(self.addr.get('address', ''))
+    
+    def get_data(self) -> Tuple[str, str]:
+        """获取数据"""
+        return self.name_edit.text().strip(), self.address_edit.text().strip()
+    
+    def accept(self):
+        name = self.name_edit.text().strip()
+        address = self.address_edit.text().strip()
+        
+        if not name:
+            QMessageBox.warning(self, "提示", "请输入地址名称")
+            return
+        
+        if not address:
+            QMessageBox.warning(self, "提示", "请输入详细地址")
+            return
+        
+        super().accept()
 
 
 
