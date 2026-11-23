@@ -1,5 +1,7 @@
 # 软件截图 v1.1.54
 
+> **一句话**：快递查询系统：把各家平台的快递单号集中录入管理，一个界面看全程轨迹，自动识别快递公司、按状态智能分类并给出时效预估。一次买很多东西时不用在几个 App 之间来回切。
+
 <img width="502" height="432" alt="image" src="https://github.com/user-attachments/assets/eb53d6db-484b-4927-8ef1-c8b69ea82129" />
 
 <img width="1175" height="1040" alt="image" src="https://github.com/user-attachments/assets/48344f6e-5cc9-46af-a6b7-b257fb7b9a3a" />
